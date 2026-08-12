@@ -1,0 +1,5 @@
+host: 0.0.0.0
+advertised_host: null
+port: 8765
+log_level: INFO
+mock_mode: false

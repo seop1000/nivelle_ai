@@ -1,0 +1,15 @@
+connections:
+  - id: lan
+    type: local
+    host: 192.168.0.10
+    port: 8765
+    tls: false
+    priority: 1
+    enabled: true
+  - id: private_vpn
+    type: vpn
+    host: nivelle-core
+    port: 8765
+    tls: true
+    priority: 3
+    enabled: false

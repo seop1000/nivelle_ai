@@ -1,0 +1,7 @@
+enabled: true
+max_parallel_calls_per_client: 2
+max_calls_per_turn: 3
+approval_timeout_seconds: 120
+result_timeout_seconds: 30
+audit_retention_days: 90
+expose_debug_metadata: false

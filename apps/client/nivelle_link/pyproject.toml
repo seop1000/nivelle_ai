@@ -1,0 +1,43 @@
+[project]
+name = "nivelle-link"
+version = "1.0.0"
+description = "Nivelle Link - Desktop client for Nivelle AI"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6>=6.6",
+    "qasync>=0.23",
+    "httpx>=0.25",
+    "websockets>=12.0",
+    "pyyaml>=6.0",
+    "keyring>=24.0",
+    "platformdirs>=4.0",
+    "nivelle-protocol>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.21",
+    "pytest-mock>=3.11",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

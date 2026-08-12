@@ -1,0 +1,21 @@
+phase: 2
+enabled: true
+automatic_extraction: false
+prompt_top_k: 5
+search_limit: 30
+search_backend: sqlite
+embedding_provider: null
+memory_retrieval:
+  enabled: true
+  top_k: 5
+  candidate_limit: 30
+  minimum_relevance: 0.12
+  relevance_weight: 0.70
+  priority_weight: 0.20
+  recency_weight: 0.10
+  include_recent_user_messages: 2
+  exact_phrase_boost: 0.20
+  substring_boost: 0.10
+  prefix_boost: 0.08
+  include_inactive: false
+  include_deleted: false

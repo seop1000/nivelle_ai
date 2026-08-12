@@ -1,0 +1,15 @@
+mode: mock
+llama_server_path: null
+provider_endpoint: http://127.0.0.1:8080
+fallback_enabled: false
+models:
+  - id: qwen3.5-27b-q4-k-m
+    name: Qwen3.5-27B Q4_K_M
+    path: runtime/models/Qwen_Qwen3.5-27B-Q4_K_M.gguf
+    role: primary
+    enabled: true
+  - id: qwen3.5-9b-q4-k-m
+    name: Qwen3.5-9B Q4_K_M
+    path: runtime/models/Qwen_Qwen3.5-9B-Q4_K_M.gguf
+    role: fallback
+    enabled: true
