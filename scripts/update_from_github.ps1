@@ -1,6 +1,6 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
-    [string]$Repository = 'seop1000/nozomi_ai',
+    [string]$Repository = 'seop1000/nivelle_ai',
 
     [string]$TargetRoot,
 
