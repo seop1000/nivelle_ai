@@ -27,3 +27,4 @@ runtime/
 
 /.git_disabled/
 /nozomi_ai/
+.aider*
