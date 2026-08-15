@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Repository = 'seop1000/nivelle_ai',
 
@@ -17,6 +17,8 @@ param(
     [switch]$CheckOnly,
 
     [switch]$DownloadOnly,
+
+    [switch]$Development,
 
     [switch]$AllowHttpForTesting
 )
@@ -316,6 +318,74 @@ function Invoke-HttpDownload {
     }
 }
 
+function Get-GitHubBranch {
+    param(
+        [string]$RepositoryName,
+        [string]$BranchName,
+        [string]$TemporaryRoot
+    )
+
+    if ($BranchName -notmatch '^[A-Za-z0-9._/-]+$' -or
+        $BranchName.Contains('..') -or
+        $BranchName.StartsWith('/') -or
+        $BranchName.EndsWith('/')) {
+        Throw-OnlineUpdateError "GitHub 브랜치 이름이 올바르지 않습니다: $BranchName"
+    }
+
+    $parts = $RepositoryName.Split('/')
+    $escapedBranch = [Uri]::EscapeDataString($BranchName)
+
+    $endpoint = '{0}/repos/{1}/{2}/commits/{3}' -f (
+        $ApiBaseUrl.TrimEnd('/'),
+        [Uri]::EscapeDataString($parts[0]),
+        [Uri]::EscapeDataString($parts[1]),
+        $escapedBranch
+    )
+
+    $temporary = Join-Path $TemporaryRoot (
+        'branch-' + [guid]::NewGuid().ToString('N') + '.json.partial'
+    )
+    $script:PartialFiles.Add($temporary)
+
+    Invoke-HttpDownload (
+        [Uri]$endpoint
+    ) $script:ApiResponseLimit $temporary 'application/vnd.github+json' | Out-Null
+
+    try {
+        $utf8 = New-Object Text.UTF8Encoding($false, $true)
+        $json = [IO.File]::ReadAllText($temporary, $utf8)
+        $commit = $json | ConvertFrom-Json
+    }
+    catch {
+        Throw-OnlineUpdateError "GitHub 브랜치 응답을 해석할 수 없습니다: $($_.Exception.Message)"
+    }
+
+    if ($null -eq $commit -or
+        -not ($commit.PSObject.Properties.Name -contains 'sha') -or
+        -not ($commit.sha -is [string]) -or
+        [string]::IsNullOrWhiteSpace([string]$commit.sha)) {
+        Throw-OnlineUpdateError 'GitHub 브랜치 응답에 commit SHA가 없습니다.'
+    }
+
+    $sha = ([string]$commit.sha).Trim().ToLowerInvariant()
+
+    if ($sha -notmatch '^[0-9a-f]{40}$') {
+        Throw-OnlineUpdateError "GitHub commit SHA 형식이 올바르지 않습니다: $sha"
+    }
+
+    $archiveUrl = 'https://github.com/{0}/{1}/archive/{2}.zip' -f (
+        $parts[0],
+        $parts[1],
+        $sha
+    )
+
+    return [pscustomobject]@{
+        Branch = $BranchName
+        Sha = $sha
+        ArchiveUrl = $archiveUrl
+    }
+}
+
 function Get-GitHubRelease {
     param([string]$RepositoryName, [string]$TemporaryRoot)
     $baseUri = $null
@@ -520,6 +590,177 @@ try {
     $downloadRoot = Resolve-DownloadRoot
 
     Write-UpdateInfo "$repositoryName 최신 공개 릴리스를 확인합니다. 현재 버전: $currentVersion"
+    if ($Development) {
+        $branchName = 'main'
+
+        Write-UpdateInfo "$repositoryName/$branchName 개발 브랜치를 확인합니다. 현재 버전: $currentVersion"
+        $branch = Get-GitHubBranch $repositoryName $branchName $downloadRoot
+
+        $shortSha = ([string]$branch.Sha).Substring(0, 12)
+        $baseVersion = ($currentVersion -replace '-dev\.g[0-9a-f]+$', '')
+        $targetVersion = "$baseVersion-dev.g$shortSha"
+
+        if ($currentVersion -ceq $targetVersion) {
+            Write-Host "이미 이 개발 커밋이 적용되어 있습니다: $targetVersion" -ForegroundColor Green
+            exit 0
+        }
+
+        Write-Host "개발 업데이트를 찾았습니다: $currentVersion -> $targetVersion" -ForegroundColor Green
+        Write-Host "브랜치: $branchName"
+        Write-Host "커밋: $($branch.Sha)"
+
+        if ($CheckOnly) {
+            exit 0
+        }
+
+        if (Test-Path -LiteralPath (Join-Path $installRoot '.git')) {
+            Throw-OnlineUpdateError (
+                'Git 작업 폴더에는 개발 업데이트를 직접 적용하지 않습니다. ' +
+                '-CheckOnly 또는 -DownloadOnly를 사용하세요.'
+            )
+        }
+
+        $developmentRoot = Join-Path $downloadRoot (
+            'development-' + [guid]::NewGuid().ToString('N')
+        )
+        $archivePartial = Join-Path $downloadRoot (
+            'source-' + $shortSha + '.' +
+            [guid]::NewGuid().ToString('N') +
+            '.zip.partial'
+        )
+        $archivePath = Join-Path $downloadRoot (
+            'source-' + $shortSha + '.zip'
+        )
+
+        try {
+            New-Item -ItemType Directory -Path $developmentRoot -Force | Out-Null
+
+            $script:PartialFiles.Add($archivePartial)
+            Write-UpdateInfo "main 소스 ZIP을 내려받습니다: $shortSha"
+
+            $archiveLength = Invoke-HttpDownload (
+                [Uri][string]$branch.ArchiveUrl
+            ) $MaxPackageBytes $archivePartial 'application/zip'
+
+            if ($archiveLength -le 0) {
+                Throw-OnlineUpdateError '개발 소스 ZIP이 비어 있습니다.'
+            }
+
+            Move-VerifiedDownload $archivePartial $archivePath
+
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+            $extractRoot = Join-Path $developmentRoot 'source'
+            New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+
+            [IO.Compression.ZipFile]::ExtractToDirectory(
+                $archivePath,
+                $extractRoot
+            )
+
+            $roots = @(
+                Get-ChildItem -LiteralPath $extractRoot -Directory -Force
+            )
+
+            if ($roots.Count -ne 1) {
+                Throw-OnlineUpdateError (
+                    "GitHub 소스 ZIP의 최상위 폴더가 정확히 하나가 아닙니다: " +
+                    $roots.Count
+                )
+            }
+
+            $projectRoot = $roots[0].FullName
+
+            foreach ($required in @(
+                'VERSION',
+                'pyproject.toml',
+                'nivelle.py',
+                'apps',
+                'packages',
+                'scripts'
+            )) {
+                if (-not (Test-Path -LiteralPath (Join-Path $projectRoot $required))) {
+                    Throw-OnlineUpdateError "개발 소스에 필수 항목이 없습니다: $required"
+                }
+            }
+
+            # 정식 저장소 VERSION은 수정하지 않고,
+            # 내려받은 임시 소스에만 commit 기반 개발 버전을 부여한다.
+            [IO.File]::WriteAllText(
+                (Join-Path $projectRoot 'VERSION'),
+                $targetVersion + "`n",
+                (New-Object Text.UTF8Encoding($false))
+            )
+
+            # 원격 소스 안의 스크립트를 실행하지 않는다.
+            # 현재 설치본에 포함된 신뢰된 패치 빌더를 사용한다.
+            $buildScript = Join-Path $installRoot 'scripts\build_update.ps1'
+            if (-not (Test-Path -LiteralPath $buildScript -PathType Leaf)) {
+                Throw-OnlineUpdateError '현재 설치본에 build_update.ps1이 없습니다.'
+            }
+
+            $packageName = "Nivelle-Update-$currentVersion-to-$targetVersion.zip"
+            $packagePath = Join-Path $downloadRoot $packageName
+
+            Write-UpdateInfo '개발 소스를 현재 설치본과 비교해 안전 패치를 생성합니다.'
+
+            & powershell.exe `
+                -NoProfile `
+                -ExecutionPolicy Bypass `
+                -File $buildScript `
+                -BasePath $installRoot `
+                -ProjectRoot $projectRoot `
+                -FromVersion $currentVersion `
+                -ToVersion $targetVersion `
+                -OutputPath $packagePath `
+                -Development `
+                -Force
+
+            if ($LASTEXITCODE -ne 0) {
+                Throw-OnlineUpdateError "개발 패치 생성에 실패했습니다. 종료 코드: $LASTEXITCODE"
+            }
+
+            if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
+                Throw-OnlineUpdateError '개발 패치 ZIP이 생성되지 않았습니다.'
+            }
+
+            Write-Host "개발 패치를 생성했습니다: $packagePath" -ForegroundColor Green
+
+            if ($DownloadOnly) {
+                exit 0
+            }
+
+            Write-Host (
+                '개발 업데이트를 적용합니다. 실행 중인 Nivelle Core, Link, ' +
+                'llama-server가 있으면 안전 적용기가 중단합니다.'
+            ) -ForegroundColor Yellow
+
+            $applyScript = Join-Path $installRoot 'scripts\apply_update.ps1'
+
+            & powershell.exe `
+                -NoProfile `
+                -ExecutionPolicy Bypass `
+                -File $applyScript `
+                -PackagePath $packagePath `
+                -TargetRoot $installRoot
+
+            if ($LASTEXITCODE -ne 0) {
+                Throw-OnlineUpdateError "개발 패치 적용에 실패했습니다. 종료 코드: $LASTEXITCODE"
+            }
+
+            Write-Host "개발 업데이트 완료: $targetVersion" -ForegroundColor Green
+            exit 0
+        }
+        finally {
+            if (Test-Path -LiteralPath $developmentRoot -PathType Container) {
+                Remove-Item -LiteralPath $developmentRoot -Recurse -Force
+            }
+            if (Test-Path -LiteralPath $archivePath -PathType Leaf) {
+                Remove-Item -LiteralPath $archivePath -Force
+            }
+        }
+    }
+
     $release = Get-GitHubRelease $repositoryName $downloadRoot
     $selection = Get-ReleaseSelection $release $currentVersion
     if (-not $selection.UpdateAvailable) {

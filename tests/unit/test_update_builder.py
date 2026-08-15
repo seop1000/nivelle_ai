@@ -163,6 +163,68 @@ def test_builder_creates_safe_deterministic_delta(tmp_path: Path) -> None:
             assert hashlib.sha256(payload).hexdigest() == item["sha256"]
 
 
+
+@pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
+def test_development_builder_preserves_base_only_files(tmp_path: Path) -> None:
+    assert POWERSHELL is not None
+
+    base = tmp_path / "base"
+    current = tmp_path / "current"
+
+    _write(base, "VERSION", "0.4.0\n")
+    _write(base, "same.txt", "same")
+    _write(base, "changed.txt", "old")
+    _write(base, "local-only.txt", "keep me")
+
+    _write(current, "VERSION", "0.4.0-dev.g123456789abc\n")
+    _write(current, "same.txt", "same")
+    _write(current, "changed.txt", "new")
+    _write(current, "added.txt", "added")
+    _write(current, "Nivelle-Update.cmd", "@echo off\r\n")
+    _write(current, "scripts/apply_update.ps1", "param()\n")
+
+    output = tmp_path / "development-update.zip"
+
+    subprocess.run(
+        [
+            POWERSHELL,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(BUILD_SCRIPT),
+            "-BasePath",
+            str(base),
+            "-ProjectRoot",
+            str(current),
+            "-FromVersion",
+            "0.4.0",
+            "-ToVersion",
+            "0.4.0-dev.g123456789abc",
+            "-OutputPath",
+            str(output),
+            "-Development",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with zipfile.ZipFile(output) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+
+    files = {item["path"]: item for item in manifest["files"]}
+    deletions = {item["path"]: item for item in manifest["deletions"]}
+
+    assert "changed.txt" in files
+    assert "added.txt" in files
+    assert "VERSION" in files
+    assert "local-only.txt" not in files
+    assert deletions == {}
+
+
 @pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
 def test_031_to_040_uses_exact_legacy_bridge_asset_and_manifest(tmp_path: Path) -> None:
     assert POWERSHELL is not None

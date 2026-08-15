@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 
 <#
 .SYNOPSIS
@@ -56,6 +56,8 @@ param(
     [string]$ToVersion,
 
     [string]$OutputPath,
+
+    [switch]$Development,
 
     [switch]$Force
 )
@@ -661,7 +663,11 @@ try {
     )
     [Array]::Sort($changedPaths, [StringComparer]::Ordinal)
     [string[]]$deletedPaths = @(
-        $baseSnapshot.Keys | Where-Object { -not $currentSnapshot.ContainsKey($_) }
+        if (-not $Development) {
+            $baseSnapshot.Keys | Where-Object {
+                -not $currentSnapshot.ContainsKey($_)
+            }
+        }
     )
     [Array]::Sort($deletedPaths, [StringComparer]::Ordinal)
 
