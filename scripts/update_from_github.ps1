@@ -613,7 +613,7 @@ try {
             exit 0
         }
 
-        if (Test-Path -LiteralPath (Join-Path $installRoot '.git')) {
+        if (-not $DownloadOnly -and (Test-Path -LiteralPath (Join-Path $installRoot '.git'))) {
             Throw-OnlineUpdateError (
                 'Git 작업 폴더에는 개발 업데이트를 직접 적용하지 않습니다. ' +
                 '-CheckOnly 또는 -DownloadOnly를 사용하세요.'
