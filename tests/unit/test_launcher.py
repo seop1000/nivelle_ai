@@ -214,6 +214,8 @@ def test_llama_command_uses_saved_model_endpoint_and_inference_values(tmp_path: 
     assert _argument(command, "--alias") == "Configured assistant"
     assert _argument(command, "--host") == "localhost"
     assert _argument(command, "--port") == "9123"
+    assert _argument(command, "--cors-origins") == "localhost"
+    assert "--no-cors-credentials" in command
     assert _argument(command, "--ctx-size") == "16384"
     assert _argument(command, "--parallel") == "3"
     assert _argument(command, "--gpu-layers") == "27"
