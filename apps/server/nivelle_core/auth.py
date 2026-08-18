@@ -25,18 +25,28 @@ class PairingService:
         self.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         return self.code
 
+    def pairing_available(self) -> bool:
+        if self.code is None or self.expires_at is None:
+            return False
+        if datetime.now(UTC) > self.expires_at:
+            self.code, self.expires_at = None, None
+            return False
+        return True
+
     async def complete(self, code: str, name: str) -> tuple[str, str]:
         if self.code is None or self.expires_at is None or datetime.now(UTC) > self.expires_at:
             raise ValueError("PAIRING_CODE_EXPIRED")
         if not hmac.compare_digest(self.code, code):
             raise ValueError("PAIRING_CODE_INVALID")
+        # Consume before the first await so concurrent requests cannot both
+        # redeem one code. A database error requires issuing a fresh code.
+        self.code, self.expires_at = None, None
         token, salt, client_id = secrets.token_urlsafe(48), secrets.token_hex(16), str(uuid4())
         digest = self._hash(token, salt)
         await self.db.execute(
             "INSERT INTO clients VALUES(?,?,?,?,?,NULL,NULL,1)",
             (client_id, name, digest, salt, now()),
         )
-        self.code, self.expires_at = None, None
         return client_id, token
 
     async def verify(self, token: str) -> str | None:

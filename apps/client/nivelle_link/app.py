@@ -2,10 +2,11 @@ import asyncio
 import os
 import sys
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import qasync  # type: ignore[import-untyped]
+from keyring.errors import KeyringError
 from nivelle_protocol.settings import ConnectionProfile
 from nivelle_protocol.tools import TOOL_REGISTRY
 from nivelle_protocol.version import APP_VERSION, PROTOCOL_VERSION, protocol_compatibility
@@ -21,14 +22,21 @@ from .agent import (
     PolicyStore,
 )
 from .agent_controller import AgentController
-from .network import ConnectionManager, ConnectionState, NetworkClient
+from .network import (
+    ConnectionManager,
+    ConnectionState,
+    NetworkClient,
+    ServerIdentityMismatchError,
+)
 from .storage import (
     client_data_dir,
     load_connection_profiles,
     load_token_for_profile,
+    load_token_for_server,
     resolve_connection_profiles,
     save_connection_profiles,
     save_token_for_profile,
+    save_token_for_server,
 )
 from .windows import ConnectionDialog, MainChatWindow, PairingDialog
 
@@ -720,6 +728,7 @@ class NivelleLinkApplication:
             console.refresh_requested.connect(self._schedule_admin_refresh)
             console.save_requested.connect(self._schedule_admin_save)
             console.rollback_requested.connect(self._schedule_admin_rollback)
+            console.pairing_code_requested.connect(self._schedule_pairing_code)
             self._admin_console_connected = True
         self._schedule_admin_refresh()
 
@@ -802,6 +811,9 @@ class NivelleLinkApplication:
 
     def _schedule_admin_rollback(self, revision_id: int) -> None:
         self._start_admin_task(self._rollback_admin(revision_id))
+
+    def _schedule_pairing_code(self) -> None:
+        self._start_admin_task(self._create_pairing_code())
 
     def _schedule_connection_settings(self) -> None:
         if self._send_task is not None and not self._send_task.done():
@@ -993,6 +1005,15 @@ class NivelleLinkApplication:
             self.connections.state = ConnectionState.FAILED
             self._set_connection_state(ConnectionState.FAILED)
             return
+        if (
+            self.connections.state == ConnectionState.FAILED
+            and isinstance(
+                self.connections.last_error, ServerIdentityMismatchError
+            )
+        ):
+            self._set_connection_state(ConnectionState.FAILED)
+            self.window.show_error(str(self.connections.last_error))
+            return
         # A health probe can succeed while authenticated status or WebSocket
         # establishment still fails.  `_connected` then returns after moving the
         # manager back to RECONNECT_WAIT, but could not reschedule from inside
@@ -1035,6 +1056,15 @@ class NivelleLinkApplication:
         while self.connections.active is not None:
             await asyncio.sleep(self.connections.health_interval)
             if not await self.connections.check_active():
+                if isinstance(
+                    self.connections.last_error, ServerIdentityMismatchError
+                ):
+                    self._set_connection_state(ConnectionState.RECONNECT_WAIT)
+                    self._schedule_auto_reconnect()
+                    self.window.show_error(
+                        "연결 주소에서 다른 Core가 감지되어 저장된 다른 주소를 확인합니다."
+                    )
+                    return
                 if self.connections.active is None:
                     self._set_connection_state(ConnectionState.RECONNECT_WAIT)
                     self._schedule_auto_reconnect()
@@ -1046,6 +1076,15 @@ class NivelleLinkApplication:
                     status = await self.client.get("/api/v1/status")
                     if not isinstance(status, dict):
                         raise TypeError("서버가 올바르지 않은 상태 응답을 반환했습니다.")
+                    profile = self.connections.active
+                    if profile is not None:
+                        self._bind_authenticated_server(
+                            profile, status, promote_token=False
+                        )
+                except ServerIdentityMismatchError as exc:
+                    self._mark_authentication_required()
+                    self.window.show_error(f"서버 식별 정보 확인에 실패했습니다: {exc}")
+                    return
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code in {401, 403}:
                         retrying = self._handle_authentication_failure()
@@ -1170,6 +1209,8 @@ class NivelleLinkApplication:
             detail = "연결 시간이 초과되었습니다."
         elif isinstance(error, httpx.ConnectError):
             detail = "서버가 응답하지 않습니다."
+        elif isinstance(error, ServerIdentityMismatchError):
+            detail = str(error)
         elif isinstance(error, httpx.HTTPStatusError):
             detail = f"서버 상태 확인 응답: HTTP {error.response.status_code}"
         else:
@@ -1180,15 +1221,13 @@ class NivelleLinkApplication:
         self._cancel_auto_reconnect()
         self.connections.state = ConnectionState.AUTHENTICATING
         self._set_connection_state(ConnectionState.AUTHENTICATING)
-        server_key = f"{'https' if profile.tls else 'http'}://{profile.host}:{profile.port}"
-        if self._active_server_key != server_key:
-            self._cancel_history_operations()
-            self._active_server_key = server_key
-            self._active_conversation_id = None
-            self._conversation_titles.clear()
-            self.window.clear_conversation()
+        observed_server_id = self.connections.server_id_for(profile)
         try:
-            self.client.token = load_token_for_profile(profile)
+            self.client.token = (
+                load_token_for_server(profile, observed_server_id)
+                if observed_server_id is not None
+                else load_token_for_profile(profile)
+            )
         except Exception as exc:
             self.client.token = None
             self.window.show_error(f"저장된 인증 정보를 읽지 못했습니다: {exc}")
@@ -1202,6 +1241,13 @@ class NivelleLinkApplication:
             status = await self.client.get("/api/v1/status")
             if not isinstance(status, dict):
                 raise TypeError("서버가 올바르지 않은 상태 응답을 반환했습니다.")
+            profile = self._bind_authenticated_server(profile, status)
+            server_key = (
+                f"server:{profile.server_id}"
+                if profile.server_id is not None
+                else f"{'https' if profile.tls else 'http'}://{profile.host}:{profile.port}"
+            )
+            self._activate_server_key(server_key)
             self._authentication_failures = 0
             self._apply_server_status(status)
             await self.client.ensure_chat_connection()
@@ -1228,6 +1274,9 @@ class NivelleLinkApplication:
                 await self._refresh_conversations()
             if self.window.persona_window is not None and self.window.persona_window.isVisible():
                 await self._refresh_persona()
+        except ServerIdentityMismatchError as exc:
+            self._mark_authentication_required()
+            self.window.show_error(f"서버 식별 정보 확인에 실패했습니다: {exc}")
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in {401, 403}:
                 retrying = self._handle_authentication_failure()
@@ -1249,6 +1298,73 @@ class NivelleLinkApplication:
                 self.connections.state = ConnectionState.FAILED
                 self._set_connection_state(ConnectionState.FAILED)
             self.window.show_error(f"서버 상태를 확인하지 못했습니다: {exc}")
+
+    def _activate_server_key(self, server_key: str) -> None:
+        if self._active_server_key == server_key:
+            return
+        self._cancel_history_operations()
+        self._active_server_key = server_key
+        self._active_conversation_id = None
+        self._conversation_titles.clear()
+        self.window.clear_conversation()
+
+    def _bind_authenticated_server(
+        self,
+        profile: ConnectionProfile,
+        status: dict[str, Any],
+        *,
+        promote_token: bool = True,
+    ) -> ConnectionProfile:
+        """Pin a verified Core identity and promote its legacy endpoint token."""
+
+        observed_server_id = self.connections.server_id_for(profile)
+        raw_status_server_id = status.get("server_id")
+        if raw_status_server_id in (None, ""):
+            if observed_server_id is not None:
+                raise ServerIdentityMismatchError(
+                    "health와 인증된 status의 서버 ID가 일치하지 않습니다."
+                )
+            return profile
+        try:
+            status_server_id = str(UUID(str(raw_status_server_id)))
+        except ValueError as exc:
+            raise ServerIdentityMismatchError(
+                "인증된 status가 올바르지 않은 서버 ID를 반환했습니다."
+            ) from exc
+        if observed_server_id is not None and status_server_id != observed_server_id:
+            raise ServerIdentityMismatchError(
+                "health와 인증된 status가 서로 다른 서버를 가리킵니다."
+            )
+        if profile.server_id is not None and status_server_id != profile.server_id:
+            raise ServerIdentityMismatchError(
+                "저장된 프로필과 다른 Nivelle Core 서버가 응답했습니다."
+            )
+
+        token = self.client.token
+        if promote_token and token:
+            try:
+                save_token_for_server(status_server_id, token)
+            except (KeyringError, OSError, RuntimeError) as exc:
+                self.window.show_error(
+                    f"서버별 인증 정보를 저장하지 못했습니다: {exc}"
+                )
+
+        if profile.server_id == status_server_id:
+            return profile
+        pinned = profile.model_copy(update={"server_id": status_server_id})
+        profiles = [
+            pinned if item is profile or item.id == profile.id else item
+            for item in self.connections.profiles
+        ]
+        self.connections.profiles = profiles
+        if self.connections.active is profile:
+            self.connections.active = pinned
+        if profile.id != "runtime-gateway":
+            try:
+                save_connection_profiles(profiles)
+            except OSError as exc:
+                self.window.show_error(f"서버 식별 정보를 저장하지 못했습니다: {exc}")
+        return pinned
 
     def _apply_server_status(self, status: dict[str, Any]) -> None:
         self._last_server_status = dict(status)
@@ -1304,6 +1420,35 @@ class NivelleLinkApplication:
             console.show_error(self._admin_http_error(exc))
         except (httpx.HTTPError, OSError, TypeError, ValueError) as exc:
             console.show_error(f"서버 상태와 설정을 불러오지 못했습니다: {exc}")
+        finally:
+            console.show_loading(False)
+
+    async def _create_pairing_code(self) -> None:
+        console = self.window.console
+        if console is None:
+            return
+        if not self.connections.active or not self.client.token:
+            console.show_error("새 Link를 등록하려면 서버 연결과 관리자 인증이 필요합니다.")
+            return
+        console.show_loading(True, "새 Link 페어링 코드를 생성하는 중…")
+        try:
+            value = await self.client.post("/api/v1/pairing/code")
+            if not isinstance(value, dict):
+                raise TypeError("서버가 올바르지 않은 페어링 코드 응답을 반환했습니다.")
+            code = str(value.get("code") or "")
+            if len(code) != 6 or not code.isdigit():
+                raise ValueError("서버가 올바르지 않은 페어링 코드를 반환했습니다.")
+            expires_at = value.get("expires_at")
+            console.show_pairing_code(
+                code, str(expires_at) if expires_at not in (None, "") else None
+            )
+            console.show_message(
+                "새 Link에서 아래 일회성 코드를 입력하세요. 코드는 10분 뒤 만료됩니다."
+            )
+        except httpx.HTTPStatusError as exc:
+            console.show_error(self._admin_http_error(exc))
+        except (httpx.HTTPError, OSError, TypeError, ValueError) as exc:
+            console.show_error(f"페어링 코드를 생성하지 못했습니다: {exc}")
         finally:
             console.show_loading(False)
 
@@ -1737,8 +1882,12 @@ class NivelleLinkApplication:
             async with httpx.AsyncClient(timeout=10) as http:
                 response = await http.get(self.connections.base_url() + "/api/v1/pairing/status")
                 response.raise_for_status()
-                required = bool(response.json().get("pairing_required"))
-            if not required:
+                pairing_status = response.json()
+                if not isinstance(pairing_status, dict):
+                    raise TypeError("서버가 올바르지 않은 페어링 상태를 반환했습니다.")
+                required = bool(pairing_status.get("pairing_required"))
+                available = bool(pairing_status.get("pairing_available"))
+            if not required and not available:
                 self.window.show_error(
                     "이 서버에 저장된 인증 정보가 없습니다. 서버 관리자에게 새 페어링을 요청하세요."
                 )
@@ -1754,7 +1903,7 @@ class NivelleLinkApplication:
             return True
         except httpx.HTTPStatusError as exc:
             self.window.show_error(f"페어링에 실패했습니다: HTTP {exc.response.status_code}")
-        except (httpx.HTTPError, OSError, KeyError) as exc:
+        except (httpx.HTTPError, OSError, KeyError, TypeError) as exc:
             self.window.show_error(f"페어링에 실패했습니다: {exc}")
         return False
 

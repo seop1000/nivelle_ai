@@ -270,6 +270,176 @@ async def test_missing_token_and_incomplete_pairing_clears_stale_active_profile(
 
 
 @pytest.mark.asyncio
+async def test_authenticated_server_identity_promotes_token_and_pins_profile(
+    monkeypatch: pytest.MonkeyPatch, qtbot: Any
+) -> None:
+    server_id = "31c2cc21-65cc-4ab7-9258-b77497347b1b"
+    profile = ConnectionProfile(id="lan", host="192.168.0.20")
+    monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [profile])
+    application = client_app.NivelleLinkApplication()
+    qtbot.addWidget(application.window)
+    application.connections.active = profile
+    monkeypatch.setattr(
+        application.connections, "server_id_for", lambda _profile: server_id
+    )
+    monkeypatch.setattr(
+        client_app,
+        "load_token_for_server",
+        lambda _profile, _server_id: "endpoint-token",
+    )
+    promoted: list[tuple[str, str]] = []
+    saved_profiles: list[list[ConnectionProfile]] = []
+    monkeypatch.setattr(
+        client_app,
+        "save_token_for_server",
+        lambda value, token: promoted.append((value, token)),
+    )
+    monkeypatch.setattr(
+        client_app,
+        "save_connection_profiles",
+        lambda profiles: saved_profiles.append(list(profiles)),
+    )
+    monkeypatch.setattr(application, "_ensure_connection_monitor", lambda: None)
+
+    async def get(_path: str) -> object:
+        return {
+            "server_id": server_id,
+            "protocol_version": "1.0",
+            "model_name": "test",
+            "uptime_seconds": 1,
+        }
+
+    async def ensure_chat_connection() -> None:
+        return None
+
+    monkeypatch.setattr(application.client, "get", get)
+    monkeypatch.setattr(application.client, "ensure_chat_connection", ensure_chat_connection)
+
+    await application._connected(profile)
+
+    assert application.connections.state == ConnectionState.CONNECTED
+    assert application.connections.active is not None
+    assert application.connections.active.server_id == server_id
+    assert application.connections.profiles[0].server_id == server_id
+    assert promoted == [(server_id, "endpoint-token")]
+    assert saved_profiles and saved_profiles[-1][0].server_id == server_id
+    assert application._active_server_key == f"server:{server_id}"
+
+
+@pytest.mark.asyncio
+async def test_authenticated_status_identity_disagreement_stops_reconnect(
+    monkeypatch: pytest.MonkeyPatch, qtbot: Any
+) -> None:
+    health_server_id = "31c2cc21-65cc-4ab7-9258-b77497347b1b"
+    status_server_id = "74965be5-dce5-411c-9767-756f964a8e5c"
+    profile = ConnectionProfile(id="lan", host="192.168.0.20")
+    monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [profile])
+    application = client_app.NivelleLinkApplication()
+    qtbot.addWidget(application.window)
+    application.connections.active = profile
+    monkeypatch.setattr(
+        application.connections, "server_id_for", lambda _profile: health_server_id
+    )
+    monkeypatch.setattr(
+        client_app,
+        "load_token_for_server",
+        lambda _profile, _server_id: "token",
+    )
+    errors: list[str] = []
+    promoted: list[tuple[str, str]] = []
+    monkeypatch.setattr(application.window, "show_error", errors.append)
+    monkeypatch.setattr(
+        client_app,
+        "save_token_for_server",
+        lambda server_id, token: promoted.append((server_id, token)),
+    )
+
+    async def get(_path: str) -> object:
+        return {
+            "server_id": status_server_id,
+            "protocol_version": "1.0",
+            "uptime_seconds": 1,
+        }
+
+    monkeypatch.setattr(application.client, "get", get)
+
+    await application._connected(profile)
+
+    assert application.connections.active is None
+    assert application.connections.state == ConnectionState.FAILED
+    assert application.connections.auto_reconnect_enabled is False
+    assert application.client.token is None
+    assert promoted == []
+    assert errors and "서버 식별 정보" in errors[-1]
+
+
+@pytest.mark.asyncio
+async def test_second_client_can_pair_when_admin_code_is_available(
+    monkeypatch: pytest.MonkeyPatch, qtbot: Any
+) -> None:
+    profile = ConnectionProfile(id="lan", host="192.168.0.20")
+    monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [profile])
+    application = client_app.NivelleLinkApplication()
+    qtbot.addWidget(application.window)
+    application.connections.active = profile
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"pairing_required": False, "pairing_available": True}
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, _url: str) -> FakeResponse:
+            return FakeResponse()
+
+    class Field:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def text(self) -> str:
+            return self.value
+
+    class AcceptedPairingDialog:
+        def __init__(self) -> None:
+            self.code = Field("123456")
+            self.name = Field("second-pc")
+
+        def exec(self) -> int:
+            return int(QDialog.DialogCode.Accepted)
+
+    paired: list[tuple[str, str]] = []
+    saved: list[tuple[ConnectionProfile, str]] = []
+
+    async def pair(code: str, name: str) -> str:
+        paired.append((code, name))
+        return "second-token"
+
+    monkeypatch.setattr(client_app.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(client_app, "PairingDialog", AcceptedPairingDialog)
+    monkeypatch.setattr(application.client, "pair", pair)
+    monkeypatch.setattr(
+        client_app,
+        "save_token_for_profile",
+        lambda selected, token: saved.append((selected, token)),
+    )
+
+    assert await application._pair_if_required(profile) is True
+    assert paired == [("123456", "second-pc")]
+    assert saved == [(profile, "second-token")]
+
+
+@pytest.mark.asyncio
 async def test_server_restart_recovers_after_network_and_transient_auth_failures(
     monkeypatch: pytest.MonkeyPatch, qtbot: Any
 ) -> None:

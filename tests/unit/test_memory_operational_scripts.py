@@ -41,7 +41,7 @@ async def test_runtime_audit_and_powershell_backup_scripts(tmp_path: Path) -> No
     assert audit.returncode == 0, audit.stderr
     report = json.loads(audit.stdout)
     assert report["integrity_check"] == "ok"
-    assert report["schema_version"] == 8
+    assert report["schema_version"] == 9
     assert report["memory_counts"]["active"] == 1
     assert report["issues"] == []
     assert memory.id not in audit.stdout  # healthy audits expose no per-memory content/ID

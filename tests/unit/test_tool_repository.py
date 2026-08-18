@@ -97,7 +97,7 @@ def _capability(
 
 
 @pytest.mark.asyncio
-async def test_v7_to_v8_migration_preserves_uuid_korean_and_history(tmp_path: Path) -> None:
+async def test_v7_to_latest_migration_preserves_uuid_korean_and_history(tmp_path: Path) -> None:
     database, conversation_id, message_id = await _seed_database(tmp_path)
     connection = sqlite3.connect(database.path)
     try:
@@ -105,7 +105,8 @@ async def test_v7_to_v8_migration_preserves_uuid_korean_and_history(tmp_path: Pa
         connection.execute("DROP TABLE client_capabilities")
         connection.execute("DROP TABLE tool_idempotency")
         connection.execute("DROP TABLE tool_calls")
-        connection.execute("DELETE FROM schema_versions WHERE version=8")
+        connection.execute("DROP TABLE server_identity")
+        connection.execute("DELETE FROM schema_versions WHERE version>=8")
         connection.commit()
     finally:
         connection.close()
@@ -113,10 +114,10 @@ async def test_v7_to_v8_migration_preserves_uuid_korean_and_history(tmp_path: Pa
     migrated = Database(database.path)
     await migrated.initialize()
 
-    assert LATEST_SCHEMA_VERSION == 8
+    assert LATEST_SCHEMA_VERSION == 9
     assert migrated.last_migration_backup is not None
     versions = await migrated.fetchall("SELECT version FROM schema_versions ORDER BY version")
-    assert [int(row["version"]) for row in versions] == list(range(1, 9))
+    assert [int(row["version"]) for row in versions] == list(range(1, 10))
     message = await migrated.fetchone(
         "SELECT id,conversation_id,content FROM messages WHERE id=?", (message_id,)
     )

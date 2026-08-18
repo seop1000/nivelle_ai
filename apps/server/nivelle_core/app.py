@@ -154,6 +154,7 @@ class Services:
         self.last_llm_error: str | None = None
         self.last_request_metrics: GenerationMetrics | None = None
         self.network_runtime = network_runtime
+        self.server_id: str | None = None
 
     def provider(self) -> MockLLMProvider | LlamaCppServerProvider:
         models = ModelsSettings.model_validate(self.config.load("models"))
@@ -332,6 +333,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> Any:
         await services.db.initialize()
+        services.server_id = await services.db.load_or_create_server_id()
         recovery = await services.conversations.recover_interrupted_generations()
         if any(recovery.values()):
             print(
@@ -400,16 +402,29 @@ def create_app(
             },
         )
 
+    def current_server_id() -> str:
+        if services.server_id is None:
+            raise HTTPException(503, "서버 identity가 아직 준비되지 않았습니다.")
+        return services.server_id
+
     @app.get("/health")
     async def health() -> dict[str, str]:
-        return {"status": "ok"}
+        return {"status": "ok", "server_id": current_server_id()}
 
     @app.get("/api/v1/pairing/status")
     async def pairing_status() -> dict[str, Any]:
         return {
             "pairing_required": await services.pairing.pairing_required(),
+            "pairing_available": services.pairing.pairing_available(),
             "expires_at": services.pairing.expires_at,
         }
+
+    @app.post("/api/v1/pairing/code")
+    async def issue_pairing_code(
+        _client_id: str = Depends(administrator),
+    ) -> dict[str, object]:
+        code = services.pairing.generate_code()
+        return {"code": code, "expires_at": services.pairing.expires_at}
 
     @app.get("/api/v1/pairing/local-code")
     async def local_pairing_code(request: Request) -> dict[str, object]:
@@ -421,18 +436,15 @@ def create_app(
         if not loopback_client:
             raise HTTPException(403, "페어링 코드는 서버 PC에서만 확인할 수 있습니다.")
         required = await services.pairing.pairing_required()
-        if required and (
-            services.pairing.code is None
-            or services.pairing.expires_at is None
-            or datetime.now(UTC) > services.pairing.expires_at
-        ):
+        if not services.pairing.pairing_available():
             services.pairing.generate_code()
         return {
             "pairing_required": required,
-            "code": services.pairing.code if required else None,
+            "pairing_available": True,
+            "code": services.pairing.code,
             "expires_at": (
                 services.pairing.expires_at.isoformat()
-                if required and services.pairing.expires_at is not None
+                if services.pairing.expires_at is not None
                 else None
             ),
         }
@@ -607,6 +619,7 @@ def create_app(
             "version": APP_VERSION,
             "app_version": APP_VERSION,
             "protocol_version": PROTOCOL_VERSION,
+            "server_id": current_server_id(),
             "client_id": client_id,
             "runtime": runtime,
             "version_info": runtime,

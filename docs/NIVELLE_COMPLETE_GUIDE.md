@@ -375,8 +375,9 @@ Link 모드는 모델이나 llama.cpp를 설치하지 않는다.
 5. llama.cpp가 로컬 managed endpoint면 `127.0.0.1:8080`으로 시작한다.
 6. provider health가 준비될 때까지 기다린다.
 7. Core Uvicorn Gateway를 `0.0.0.0:8765`에 시작한다.
-8. DB migration과 중단된 generation 복구를 수행한다.
-9. pairing이 필요하면 6자리 코드를 생성한다.
+8. DB migration을 수행하고 persistent `server_id`를 읽거나 최초 한 번 생성한다.
+9. 중단된 generation을 복구한다.
+10. pairing이 필요하면 6자리 코드를 생성한다.
 
 네트워크만 확인할 때는 모델을 준비하지 않고 다음 명령으로 종료할 수 있다.
 
@@ -388,14 +389,19 @@ Link 모드는 모델이나 llama.cpp를 설치하지 않는다.
 
 1. 연결 프로필을 `priority` 순으로 읽는다.
 2. `--gateway-endpoint`, `NIVELLE_GATEWAY_ENDPOINT`, 저장 프로필 순으로 endpoint를 고른다.
-3. keyring에서 해당 `host:port`의 토큰을 읽는다.
-4. `/health`, 인증 status와 chat WebSocket에 연결한다.
-5. 연결이 끊기면 generation token을 갱신하고 하나의 reconnect task만 실행한다.
-6. 이전 세대 callback과 중복 `assistant.completed` 이벤트를 버린다.
-7. 대화 기록을 `message_id` 기준으로 합쳐 한 번만 표시한다.
+3. `/health`에서 Core의 공개 `server_id`를 확인하고 저장된 profile과 일치하는지 검사한다.
+4. keyring에서 `server:<server_id>` 토큰을 읽는다. 기존 `host:port` 토큰은 호환용으로만
+   읽고 인증된 status가 같은 `server_id`를 확인한 뒤 새 키로 복사한다.
+5. 인증 status와 chat WebSocket에 연결한다.
+6. 연결이 끊기면 generation token을 갱신하고 하나의 reconnect task만 실행한다.
+7. 이전 세대 callback과 중복 `assistant.completed` 이벤트를 버린다.
+8. 대화 기록을 `message_id` 기준으로 합쳐 한 번만 표시한다.
 
 저장된 remote endpoint는 자동으로 다른 IP로 바꾸지 않는다. Core PC의 IP가 바뀌면
 Core 진단에서 새 advertised 주소를 확인하고 Link의 `서버 연결` 메뉴에서 수정한다.
+주소만 바뀐 같은 Core라면 고정된 `server_id`를 유지하므로 기존 토큰을 재사용한다.
+다른 Core로 바꾸려면 연결 화면에서 `기존 서버 연결을 해제하고 새 서버로 변경`을
+명시적으로 선택한다.
 
 ### 5.6 Local 시작
 
@@ -423,6 +429,11 @@ Local 모드는 자신이 시작한 Core/llama.cpp process tree를 종료한다.
 5. 클라이언트 PC에서 같은 배포본의 `Nivelle-Link.exe`를 실행한다.
 6. `≡` → `서버 연결`에서 Core의 advertised IPv4와 포트 `8765`를 입력한다.
 7. 6자리 코드를 입력해 pairing한다.
+
+두 번째 PC를 추가하려면 이미 연결된 Link의 `Core 관리` → `서버`에서
+`새 페어링 코드 생성`을 누른다. 새 PC의 Link에 표시된 일회성 코드를 입력하면 각 PC에
+서로 다른 `client_id`와 token이 발급된다. Core PC에서는 loopback 전용
+`/api/v1/pairing/local-code`로도 새 코드를 생성할 수 있다.
 
 현재 PC의 실제 예시는 다음과 같다. 다른 서버 PC에서는 반드시 진단 결과를 사용한다.
 
@@ -580,9 +591,10 @@ Provider endpoint:
 
 | Method | Path | 인증 | 역할 |
 |---|---|---|---|
-| GET | `/health` | 없음 | Gateway process health |
-| GET | `/api/v1/pairing/status` | 없음 | pairing 필요 여부 |
-| GET | `/api/v1/pairing/local-code` | Core PC loopback만 | 6자리 코드 확인 |
+| GET | `/health` | 없음 | Gateway health와 공개 `server_id` |
+| GET | `/api/v1/pairing/status` | 없음 | 초기/추가 pairing 가능 여부 |
+| POST | `/api/v1/pairing/code` | 관리자 | 추가 Link용 일회성 코드 생성 |
+| GET | `/api/v1/pairing/local-code` | Core PC loopback만 | 초기/추가 6자리 코드 생성·확인 |
 | POST | `/api/v1/pairing/complete` | 코드 | token 발급 |
 | GET | `/api/v1/status` | Bearer | Core/LLM/DB/network/Agent 상태 |
 | GET | `/api/v1/conversations` | Bearer | 대화 목록 |
@@ -625,10 +637,12 @@ UUID여야 한다. Link는 완료 ID set과 history ID set으로 중복 렌더�
 - memories와 검색 상태
 - settings revisions
 - tool calls, capability, audit events
+- persistent public `server_id`
 - schema migration version
 
-평문 인증 token은 DB에 저장하지 않는다. Link의 token은 keyring에 저장하고 Core에는
-검증용 hash만 둔다.
+평문 인증 token은 DB에 저장하지 않는다. Link의 token은 공개 `server_id`를 key로 한
+keyring 항목에 저장하고 Core에는 검증용 hash만 둔다. `server_id`는 주소 별칭과 IP 변경
+사이에서 같은 Core를 식별하기 위한 UUID이며 인증 secret이 아니다.
 
 ### 9.2 로그에 남기지 않는 값
 

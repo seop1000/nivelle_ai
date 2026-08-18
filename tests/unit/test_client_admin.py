@@ -177,6 +177,13 @@ def test_server_console_round_trips_settings_and_rollback(
     window._request_rollback()
     assert rolled_back == [7]
 
+    pairing_requests: list[bool] = []
+    window.pairing_code_requested.connect(lambda: pairing_requests.append(True))
+    window.pairing_code_button.click()
+    assert pairing_requests == [True]
+    window.show_pairing_code("123456", "2026-08-18T12:00:00+00:00")
+    assert "123456" in window.pairing_code.text()
+
 
 def test_server_console_round_trips_model_endpoint(qtbot: Any) -> None:
     window = ServerConsoleWindow()
@@ -290,3 +297,30 @@ async def test_application_validates_saves_and_refreshes_admin_settings(
         "/api/v1/settings/revisions",
     }
     assert "설정을 저장했습니다" in application.window.console.message.text()
+
+
+@pytest.mark.asyncio
+async def test_application_generates_pairing_code_for_another_link(
+    qtbot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = ConnectionProfile(id="server", host="192.168.0.20")
+    monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [profile])
+    application = client_app.NivelleLinkApplication()
+    qtbot.addWidget(application.window)
+    application.connections.active = profile
+    application.client.token = "admin-token"
+    application.window.console = ServerConsoleWindow()
+    qtbot.addWidget(application.window.console)
+    calls: list[str] = []
+
+    async def post(path: str, _value: dict[str, Any] | None = None) -> dict[str, Any]:
+        calls.append(path)
+        return {"code": "654321", "expires_at": "2026-08-18T12:00:00+00:00"}
+
+    monkeypatch.setattr(application.client, "post", post)
+
+    await application._create_pairing_code()
+
+    assert calls == ["/api/v1/pairing/code"]
+    assert "654321" in application.window.console.pairing_code.text()
+    assert "10분" in application.window.console.message.text()

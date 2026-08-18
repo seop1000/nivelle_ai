@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +17,9 @@ from nivelle_protocol.server_status import ServerStatus
 def test_health_and_pairing(tmp_path: Path) -> None:
     app = create_app(tmp_path)
     with TestClient(app) as client:
-        assert client.get("/health").json() == {"status": "ok"}
+        health = client.get("/health").json()
+        assert health["status"] == "ok"
+        assert str(UUID(health["server_id"])) == health["server_id"]
         code = app.state.services.pairing.code
         response = client.post(
             "/api/v1/pairing/complete", json={"code": code, "device_name": "test"}
@@ -82,6 +85,64 @@ def test_paired_token_remains_valid_after_server_restart(tmp_path: Path) -> None
         assert restarted.get("/health").status_code == 200
         assert restarted.get("/api/v1/memories", headers=headers).status_code == 200
         assert restarted.get("/api/v1/pairing/status").json()["pairing_required"] is False
+
+
+def test_server_id_is_stable_across_restart_and_unique_per_data_root(
+    tmp_path: Path,
+) -> None:
+    first_app = create_app(tmp_path / "primary")
+    with TestClient(first_app) as first:
+        first_id = first.get("/health").json()["server_id"]
+
+    restarted_app = create_app(tmp_path / "primary")
+    with TestClient(restarted_app) as restarted:
+        restarted_id = restarted.get("/health").json()["server_id"]
+
+    other_app = create_app(tmp_path / "other")
+    with TestClient(other_app) as other:
+        other_id = other.get("/health").json()["server_id"]
+
+    assert str(UUID(first_id)) == first_id
+    assert restarted_id == first_id
+    assert other_id != first_id
+
+
+def test_admin_can_issue_pairing_code_for_second_client(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/v1/pairing/complete",
+            json={
+                "code": app.state.services.pairing.code,
+                "device_name": "first-pc",
+            },
+        ).json()
+        first_headers = {"Authorization": f"Bearer {first['token']}"}
+
+        assert client.post("/api/v1/pairing/code").status_code == 401
+        issued = client.post("/api/v1/pairing/code", headers=first_headers)
+        assert issued.status_code == 200
+        code = issued.json()["code"]
+        assert len(code) == 6 and code.isdigit()
+        assert client.get("/api/v1/pairing/status").json() == {
+            "pairing_required": False,
+            "pairing_available": True,
+            "expires_at": issued.json()["expires_at"],
+        }
+
+        second = client.post(
+            "/api/v1/pairing/complete",
+            json={"code": code, "device_name": "second-pc"},
+        )
+        assert second.status_code == 200
+        second_payload = second.json()
+        assert second_payload["client_id"] != first["client_id"]
+        second_headers = {
+            "Authorization": f"Bearer {second_payload['token']}"
+        }
+        assert client.get("/api/v1/status", headers=first_headers).status_code == 200
+        assert client.get("/api/v1/status", headers=second_headers).status_code == 200
+        assert client.get("/api/v1/pairing/status").json()["pairing_available"] is False
 
 
 def test_revoked_token_remains_invalid_after_server_restart(tmp_path: Path) -> None:
@@ -163,6 +224,16 @@ def test_pairing_code_is_local_only_and_never_printed(
         output = capsys.readouterr().out
         assert code not in output
         assert "pairing/local-code" in output
+        paired = client.post(
+            "/api/v1/pairing/complete",
+            json={"code": code, "device_name": "first-local-client"},
+        )
+        assert paired.status_code == 200
+        additional = client.get("/api/v1/pairing/local-code")
+        assert additional.status_code == 200
+        assert additional.json()["pairing_required"] is False
+        assert additional.json()["pairing_available"] is True
+        assert len(additional.json()["code"]) == 6
 
     remote_app = create_app(tmp_path / "remote")
     with TestClient(remote_app, client=("192.168.219.100", 50000)) as remote:

@@ -147,6 +147,7 @@ class ServerStatus(BaseModel):
     version: str = APP_VERSION
     app_version: str = APP_VERSION
     protocol_version: str = PROTOCOL_VERSION
+    server_id: str | None = None
     client_id: str | None = None
     runtime: RuntimeIdentity | None = None
     version_info: RuntimeIdentity | None = None

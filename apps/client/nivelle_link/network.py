@@ -6,10 +6,15 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from time import perf_counter
 from typing import Any
+from uuid import UUID
 
 import httpx
 import websockets
 from nivelle_protocol.settings import ConnectionProfile
+
+
+class ServerIdentityMismatchError(OSError):
+    """The endpoint is not the Core installation pinned by this profile."""
 
 
 class ConnectionState(StrEnum):
@@ -55,6 +60,7 @@ class ConnectionManager:
         self._shutdown_started = False
         self._shutdown_event = asyncio.Event()
         self._close_lock = asyncio.Lock()
+        self._observed_server_ids: dict[str, str] = {}
 
     @property
     def connection_task(self) -> asyncio.Task[ConnectionProfile | None] | None:
@@ -82,9 +88,20 @@ class ConnectionManager:
         self.consecutive_failures = 0
         self.auto_reconnect_enabled = True
         self.reconnect_backoff_seconds = 1.0
+        self._observed_server_ids.clear()
+
+    @staticmethod
+    def _profile_key(profile: ConnectionProfile) -> str:
+        host = profile.host.strip().lower().strip("[]")
+        return f"{'https' if profile.tls else 'http'}://{host}:{profile.port}"
+
+    def server_id_for(self, profile: ConnectionProfile) -> str | None:
+        return self._observed_server_ids.get(self._profile_key(profile)) or profile.server_id
 
     async def _probe(self, profile: ConnectionProfile) -> None:
         scheme = "https" if profile.tls else "http"
+        profile_key = self._profile_key(profile)
+        self._observed_server_ids.pop(profile_key, None)
         started = perf_counter()
         try:
             async with httpx.AsyncClient(timeout=self.probe_timeout) as client:
@@ -92,6 +109,31 @@ class ConnectionManager:
                     f"{scheme}://{_url_host(profile.host)}:{profile.port}/health"
                 )
                 response.raise_for_status()
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = None
+                raw_server_id = payload.get("server_id") if isinstance(payload, dict) else None
+                if raw_server_id is None:
+                    if profile.server_id is not None:
+                        raise ServerIdentityMismatchError(
+                            "고정된 서버 ID를 상태 응답에서 확인할 수 없습니다."
+                        )
+                else:
+                    try:
+                        observed_server_id = str(UUID(str(raw_server_id)))
+                    except ValueError as exc:
+                        raise ServerIdentityMismatchError(
+                            "서버가 올바르지 않은 서버 ID를 반환했습니다."
+                        ) from exc
+                    if (
+                        profile.server_id is not None
+                        and observed_server_id != profile.server_id
+                    ):
+                        raise ServerIdentityMismatchError(
+                            "저장된 프로필과 다른 Nivelle Core 서버가 응답했습니다."
+                        )
+                    self._observed_server_ids[profile_key] = observed_server_id
         finally:
             self.last_attempt_at = datetime.now(UTC)
             self.last_latency_ms = (perf_counter() - started) * 1000
@@ -125,6 +167,8 @@ class ConnectionManager:
         self.state = ConnectionState.CONNECTING
         self.active = None
         self.last_error = None
+        identity_mismatch: ServerIdentityMismatchError | None = None
+        retryable_failure = False
         for profile in sorted((p for p in self.profiles if p.enabled), key=lambda p: p.priority):
             try:
                 await self._probe(profile)
@@ -134,13 +178,23 @@ class ConnectionManager:
                 self.state = ConnectionState.AUTHENTICATING
                 self.consecutive_failures = 0
                 return profile
+            except ServerIdentityMismatchError as exc:
+                if generation != self._generation or self._shutdown_started:
+                    return None
+                self.last_error = exc
+                identity_mismatch = exc
+                continue
             except (httpx.HTTPError, OSError) as exc:
                 if generation != self._generation or self._shutdown_started:
                     return None
                 self.last_error = exc
+                retryable_failure = True
                 continue
         if generation == self._generation and not self._shutdown_started:
             self.state = ConnectionState.FAILED
+            if identity_mismatch is not None and not retryable_failure:
+                self.last_error = identity_mismatch
+                self.auto_reconnect_enabled = False
         return None
 
     async def check_active(self) -> bool:
@@ -154,6 +208,11 @@ class ConnectionManager:
             self.last_error = None
             self.consecutive_failures = 0
             return True
+        except ServerIdentityMismatchError as exc:
+            self.last_error = exc
+            self.active = None
+            self.state = ConnectionState.RECONNECT_WAIT
+            return False
         except (httpx.HTTPError, OSError) as exc:
             self.last_error = exc
             self.consecutive_failures += 1

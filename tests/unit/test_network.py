@@ -6,7 +6,12 @@ from uuid import uuid4
 import httpx
 import pytest
 from nivelle_link import network
-from nivelle_link.network import ConnectionManager, ConnectionState, NetworkClient
+from nivelle_link.network import (
+    ConnectionManager,
+    ConnectionState,
+    NetworkClient,
+    ServerIdentityMismatchError,
+)
 from nivelle_protocol.settings import ConnectionProfile
 
 
@@ -18,6 +23,94 @@ def test_profiles_are_available_for_priority_selection() -> None:
         ]
     )
     assert sorted(manager.profiles, key=lambda item: item.priority)[0].id == "one"
+
+
+@pytest.mark.asyncio
+async def test_health_discovers_server_identity_and_rejects_pinned_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_id = "31c2cc21-65cc-4ab7-9258-b77497347b1b"
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"status": "ok", "server_id": observed_id},
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(network.httpx, "AsyncClient", FakeAsyncClient)
+    unpinned = ConnectionProfile(id="new", host="192.168.0.20")
+    manager = ConnectionManager([unpinned])
+
+    assert await manager.connect() is unpinned
+    assert manager.server_id_for(unpinned) == observed_id
+
+    pinned = ConnectionProfile(
+        id="pinned",
+        host="192.168.0.20",
+        server_id="74965be5-dce5-411c-9767-756f964a8e5c",
+    )
+    mismatch = ConnectionManager([pinned])
+
+    assert await mismatch.connect() is None
+    assert mismatch.active is None
+    assert mismatch.state == ConnectionState.FAILED
+    assert mismatch.auto_reconnect_enabled is False
+    assert isinstance(mismatch.last_error, ServerIdentityMismatchError)
+
+
+@pytest.mark.asyncio
+async def test_identity_mismatch_on_one_address_fails_over_to_another_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server_id = "31c2cc21-65cc-4ab7-9258-b77497347b1b"
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"status": "ok", "server_id": server_id},
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(network.httpx, "AsyncClient", FakeAsyncClient)
+    wrong = ConnectionProfile(
+        id="old-lan",
+        host="192.168.0.20",
+        priority=1,
+        server_id="74965be5-dce5-411c-9767-756f964a8e5c",
+    )
+    alternate = ConnectionProfile(
+        id="vpn",
+        type="vpn",
+        host="core.vpn",
+        priority=2,
+        server_id=server_id,
+    )
+    manager = ConnectionManager([wrong, alternate])
+
+    assert await manager.connect() is alternate
+    assert manager.active is alternate
+    assert manager.auto_reconnect_enabled is True
 
 
 @pytest.mark.asyncio

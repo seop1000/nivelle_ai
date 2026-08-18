@@ -17,7 +17,7 @@ async def _database(tmp_path: Path) -> Database:
 async def test_memory_migration_crud_and_prompt_filter(tmp_path: Path) -> None:
     database = await _database(tmp_path)
     versions = await database.fetchall("SELECT version FROM schema_versions ORDER BY version")
-    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
     repository = MemoryRepository(database)
     active = await repository.create(

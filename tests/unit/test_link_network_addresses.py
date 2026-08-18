@@ -11,6 +11,7 @@ from nivelle_link.storage import (
     validate_connection_host,
 )
 from nivelle_link.windows import ConnectionDialog, ServerConsoleWindow
+from nivelle_protocol.settings import ConnectionProfile
 from PySide6.QtWidgets import QDialog
 
 
@@ -93,6 +94,23 @@ def test_connection_dialog_warns_but_allows_loopback(qtbot: Any) -> None:
     dialog.accept()
     assert dialog.result() == int(QDialog.DialogCode.Accepted)
     assert dialog.connection_profile().host == "127.0.0.1"
+
+
+def test_connection_dialog_preserves_or_explicitly_resets_pinned_server(
+    qtbot: Any,
+) -> None:
+    server_id = "31c2cc21-65cc-4ab7-9258-b77497347b1b"
+    source = ConnectionProfile(
+        id="primary", host="localhost", server_id=server_id
+    )
+    dialog = ConnectionDialog(source)
+    qtbot.addWidget(dialog)
+    dialog.host.setText("192.168.0.20")
+
+    assert dialog.connection_profile().server_id == server_id
+
+    dialog.new_server.setChecked(True)
+    assert dialog.connection_profile().server_id is None
 
 
 def test_server_console_supports_auto_advertised_host_and_effective_status(

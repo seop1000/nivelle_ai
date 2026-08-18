@@ -47,6 +47,49 @@ def test_remote_profile_does_not_reuse_legacy_default_token(monkeypatch: object)
     assert storage.load_token_for_profile(profile) is None
 
 
+def test_server_identity_token_is_shared_across_address_aliases(
+    monkeypatch: object,
+) -> None:
+    server_id = "31c2cc21-65cc-4ab7-9258-b77497347b1b"
+    values = {
+        (storage.SERVICE, storage.token_key_for_server(server_id)): "shared-token"
+    }
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        storage.keyring, "get_password", lambda service, key: values.get((service, key))
+    )
+
+    localhost = ConnectionProfile(id="local", host="localhost", server_id=server_id)
+    lan = ConnectionProfile(id="lan", host="192.168.0.20", server_id=server_id)
+
+    assert storage.load_token_for_server(localhost, server_id) == "shared-token"
+    assert storage.load_token_for_server(lan, server_id) == "shared-token"
+
+
+def test_endpoint_token_is_not_promoted_before_authenticated_confirmation(
+    monkeypatch: object,
+) -> None:
+    server_id = "31c2cc21-65cc-4ab7-9258-b77497347b1b"
+    profile = ConnectionProfile(id="lan", host="192.168.0.20")
+    values = {(storage.SERVICE, "192.168.0.20:8765"): "legacy-token"}
+    writes: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        storage.keyring, "get_password", lambda service, key: values.get((service, key))
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        storage.keyring,
+        "set_password",
+        lambda service, key, value: writes.append((service, key, value)),
+    )
+
+    assert storage.load_token_for_server(profile, server_id) == "legacy-token"
+    assert writes == []
+
+    storage.save_token_for_server(server_id, "legacy-token")
+    assert writes == [
+        (storage.SERVICE, storage.token_key_for_server(server_id), "legacy-token")
+    ]
+
+
 def test_matching_legacy_credential_is_copied_and_verified(monkeypatch: object) -> None:
     values = {(storage.LEGACY_SERVICE, "server-a"): "old-secret"}
     writes: list[tuple[str, str, str]] = []

@@ -4,6 +4,7 @@ import tempfile
 from ipaddress import IPv4Address, ip_address
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import keyring
 import yaml
@@ -205,6 +206,12 @@ def token_key_for_profile(profile: ConnectionProfile) -> str:
     return f"{host}:{profile.port}"
 
 
+def token_key_for_server(server_id: str) -> str:
+    """Return the stable, non-secret credential key for one Core installation."""
+
+    return f"server:{UUID(server_id)}"
+
+
 def save_token(server_id: str, token: str) -> None:
     keyring.set_password(SERVICE, server_id, token)
 
@@ -232,6 +239,10 @@ def save_token_for_profile(profile: ConnectionProfile, token: str) -> None:
     save_token(token_key_for_profile(profile), token)
 
 
+def save_token_for_server(server_id: str, token: str) -> None:
+    save_token(token_key_for_server(server_id), token)
+
+
 def load_token_for_profile(profile: ConnectionProfile) -> str | None:
     key = token_key_for_profile(profile)
     token = load_token(key)
@@ -248,6 +259,19 @@ def load_token_for_profile(profile: ConnectionProfile) -> str | None:
     if legacy_token:
         save_token(key, legacy_token)
     return legacy_token
+
+
+def load_token_for_server(
+    profile: ConnectionProfile, server_id: str
+) -> str | None:
+    """Load a stable credential, falling back to the exact legacy endpoint.
+
+    The fallback is intentionally read-only. The caller must authenticate it
+    against this server before promoting it to the stable identity key.
+    """
+
+    token = load_token(token_key_for_server(server_id))
+    return token if token else load_token_for_profile(profile)
 
 
 def delete_token(server_id: str) -> None:

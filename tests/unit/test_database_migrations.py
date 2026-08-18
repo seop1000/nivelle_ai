@@ -55,7 +55,7 @@ async def test_old_schema_migration_backs_up_repairs_and_preserves_ids(tmp_path:
         backup.close()
 
     versions = await database.fetchall("SELECT version FROM schema_versions ORDER BY version")
-    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     rows = await database.fetchall(
         """
         SELECT id,content,normalized_content,active,superseded_by
@@ -84,6 +84,12 @@ async def test_old_schema_migration_backs_up_repairs_and_preserves_ids(tmp_path:
     assert "uq_messages_client_message_id" in index_names
     assert "uq_messages_retry_target" in index_names
     assert "uq_messages_request_id" in index_names
+    identity_columns = await database.fetchall("PRAGMA table_info(server_identity)")
+    assert {row["name"] for row in identity_columns} == {
+        "singleton",
+        "server_id",
+        "created_at",
+    }
 
     second_start = Database(database_path)
     await second_start.initialize()
@@ -93,7 +99,7 @@ async def test_old_schema_migration_backs_up_repairs_and_preserves_ids(tmp_path:
         for row in await second_start.fetchall(
             "SELECT version FROM schema_versions ORDER BY version"
         )
-    ] == [1, 2, 3, 4, 5, 6, 7, 8]
+    ] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 
 @pytest.mark.asyncio
@@ -169,7 +175,7 @@ async def test_v7_backfills_only_first_historical_request_id_duplicate(
     versions = await migrated.fetchall(
         "SELECT version FROM schema_versions ORDER BY version"
     )
-    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     indexes = await migrated.fetchall("PRAGMA index_list(messages)")
     assert "uq_messages_request_id" in {row["name"] for row in indexes}
 

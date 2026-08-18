@@ -65,6 +65,7 @@ class ServerConsoleWindow(QMainWindow):
     refresh_requested = Signal()
     save_requested = Signal(str, object)
     rollback_requested = Signal(int)
+    pairing_code_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -165,6 +166,23 @@ class ServerConsoleWindow(QMainWindow):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         layout.addWidget(self.server_effective_network)
+        pairing_group = QGroupBox("새 Link 등록")
+        pairing_layout = QVBoxLayout(pairing_group)
+        pairing_notice = QLabel(
+            "다른 PC의 Link를 추가하려면 일회성 코드를 생성한 뒤 그 PC에 입력하세요."
+        )
+        pairing_notice.setWordWrap(True)
+        self.pairing_code = QLabel("아직 생성된 코드가 없습니다.")
+        self.pairing_code.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.pairing_code_button = QPushButton("새 페어링 코드 생성")
+        self.pairing_code_button.clicked.connect(self.pairing_code_requested.emit)
+        pairing_layout.addWidget(pairing_notice)
+        pairing_layout.addWidget(self.pairing_code)
+        pairing_layout.addWidget(self.pairing_code_button)
+        layout.addWidget(pairing_group)
+        self._mutable_controls.append(self.pairing_code_button)
         layout.addStretch()
         layout.addWidget(self._save_button("server"))
         return page
@@ -510,6 +528,7 @@ class ServerConsoleWindow(QMainWindow):
         uptime = float(value.get("uptime_seconds", 0) or 0)
         lines = [
             f"서버 앱 버전: {value.get('app_version') or value.get('version', '알 수 없음')}",
+            f"서버 ID: {value.get('server_id') or '구버전 서버 · 미지원'}",
             f"클라이언트 앱 버전: {APP_VERSION}",
             f"서버 프로토콜: {value.get('protocol_version') or runtime.get('protocol_version', '알 수 없음')}",
             f"클라이언트 프로토콜: {PROTOCOL_VERSION}",
@@ -595,6 +614,10 @@ class ServerConsoleWindow(QMainWindow):
         )
         self.overview.setPlainText("\n".join(lines))
         self.set_agent_status(value.get("agent"))
+
+    def show_pairing_code(self, code: str, expires_at: str | None) -> None:
+        expiry = f" · 만료: {expires_at}" if expires_at else ""
+        self.pairing_code.setText(f"페어링 코드: {code}{expiry}")
 
     def set_agent_status(self, value: object) -> None:
         agent: dict[str, Any] = value if isinstance(value, dict) else {}
@@ -1078,9 +1101,15 @@ class ConnectionDialog(QDialog):
         self.port.setValue(profile.port if profile else 8765)
         self.tls = QCheckBox("HTTPS/WSS 보안 연결 사용")
         self.tls.setChecked(profile.tls if profile else False)
+        self.new_server = QCheckBox("기존 서버 연결을 해제하고 새 서버로 변경")
+        self.new_server.setVisible(bool(profile and profile.server_id))
+        self.new_server.setToolTip(
+            "주소만 바뀐 같은 서버라면 선택하지 마세요. 다른 Core로 바꿀 때만 선택합니다."
+        )
         layout.addRow("서버 주소", self.host)
         layout.addRow("포트", self.port)
         layout.addRow("TLS", self.tls)
+        layout.addRow("서버 식별", self.new_server)
 
         self.warning = QLabel("")
         self.warning.setWordWrap(True)
@@ -1157,6 +1186,11 @@ class ConnectionDialog(QDialog):
             tls=self.tls.isChecked(),
             priority=source.priority if source else 1,
             enabled=True,
+            server_id=(
+                source.server_id
+                if source is not None and not self.new_server.isChecked()
+                else None
+            ),
         )
 
     def _show_validation_error(self, message: str) -> None:

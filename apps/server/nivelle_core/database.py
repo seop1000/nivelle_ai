@@ -3,6 +3,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID, uuid4
 
 import aiosqlite
 
@@ -89,6 +90,16 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         8,
         """
         SELECT 1;
+        """,
+    ),
+    (
+        9,
+        """
+        CREATE TABLE IF NOT EXISTS server_identity(
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            server_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        );
         """,
     ),
 )
@@ -209,6 +220,36 @@ class Database:
                 except aiosqlite.OperationalError:
                     await db.rollback()
                     self.trigram_available = False
+
+    async def load_or_create_server_id(self) -> str:
+        """Return the durable public identity for this database installation."""
+
+        candidate = str(uuid4())
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await db.execute(
+                    """
+                    INSERT OR IGNORE INTO server_identity(singleton,server_id,created_at)
+                    VALUES(1,?,datetime('now'))
+                    """,
+                    (candidate,),
+                )
+                cursor = await db.execute(
+                    "SELECT server_id FROM server_identity WHERE singleton=1"
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+        if row is None:
+            raise RuntimeError("server identity was not persisted")
+        try:
+            return str(UUID(str(row[0])))
+        except ValueError as exc:
+            raise RuntimeError("persisted server identity is invalid") from exc
 
     async def _backup_before_migration(
         self, db: aiosqlite.Connection, *, target_version: int

@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -149,6 +150,14 @@ class ConnectionProfile(StrictSettingsModel):
     tls: bool = False
     priority: int = Field(1, ge=1)
     enabled: bool = True
+    server_id: str | None = None
+
+    @field_validator("server_id")
+    @classmethod
+    def validate_server_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return str(UUID(value))
 
 
 __all__ = [
