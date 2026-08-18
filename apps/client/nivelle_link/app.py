@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 import sys
 from typing import Any
@@ -1053,6 +1054,13 @@ class NivelleLinkApplication:
             self._schedule_auto_reconnect()
 
     async def _monitor_connection(self) -> None:
+        status_check_every = max(
+            1,
+            math.ceil(
+                self.connections.status_interval / self.connections.health_interval
+            ),
+        )
+        health_checks_since_status = status_check_every - 1
         while self.connections.active is not None:
             await asyncio.sleep(self.connections.health_interval)
             if not await self.connections.check_active():
@@ -1072,6 +1080,11 @@ class NivelleLinkApplication:
                 self._publish_connection_context("online")
                 continue
             if self.client.token:
+                health_checks_since_status += 1
+                if health_checks_since_status < status_check_every:
+                    self._set_connection_state(ConnectionState.CONNECTED)
+                    continue
+                health_checks_since_status = 0
                 try:
                     status = await self.client.get("/api/v1/status")
                     if not isinstance(status, dict):
@@ -1102,6 +1115,7 @@ class NivelleLinkApplication:
                     ):
                         self._mark_connection_lost()
                         return
+                    health_checks_since_status = status_check_every - 1
                     self._publish_connection_context("online")
                     continue
                 except (httpx.HTTPError, OSError) as exc:
@@ -1113,6 +1127,7 @@ class NivelleLinkApplication:
                     ):
                         self._mark_connection_lost()
                         return
+                    health_checks_since_status = status_check_every - 1
                     self._publish_connection_context("online")
                     continue
                 except TypeError as exc:

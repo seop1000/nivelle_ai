@@ -37,6 +37,7 @@ class ConnectionManager:
         failures_before_offline: int = 2,
         probe_timeout: float = 2.0,
         health_interval: float = 10.0,
+        status_interval: float = 30.0,
     ) -> None:
         self.profiles = profiles
         self.active: ConnectionProfile | None = None
@@ -49,6 +50,7 @@ class ConnectionManager:
         self.failures_before_offline = max(1, failures_before_offline)
         self.probe_timeout = max(0.1, probe_timeout)
         self.health_interval = max(0.1, health_interval)
+        self.status_interval = max(self.health_interval, status_interval)
         self.auto_reconnect_enabled = True
         # Persist across reconnect coroutines. A successful /health probe is
         # only a partial connection; reset this delay only after authenticated

@@ -607,6 +607,51 @@ async def test_monitor_keeps_last_status_after_one_transient_status_failure(
 
 
 @pytest.mark.asyncio
+async def test_monitor_refreshes_status_less_often_than_health(
+    monkeypatch: pytest.MonkeyPatch, qtbot: Any
+) -> None:
+    profile = ConnectionProfile(id="lan", host="192.168.0.20")
+    monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [profile])
+    application = client_app.NivelleLinkApplication()
+    qtbot.addWidget(application.window)
+    application.connections.active = profile
+    application.connections.mark_connected()
+    application.client.token = "token"
+    health_calls = 0
+    status_calls = 0
+
+    async def no_wait(_delay: float) -> None:
+        return None
+
+    async def healthy() -> bool:
+        nonlocal health_calls
+        health_calls += 1
+        if health_calls > 6:
+            application.connections.active = None
+            return False
+        return True
+
+    async def get(_path: str) -> object:
+        nonlocal status_calls
+        status_calls += 1
+        return {
+            "protocol_version": "1.0",
+            "model_name": "test",
+            "uptime_seconds": 1,
+        }
+
+    monkeypatch.setattr(client_app.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(application.connections, "check_active", healthy)
+    monkeypatch.setattr(application.client, "get", get)
+    monkeypatch.setattr(application, "_schedule_auto_reconnect", lambda: None)
+
+    await application._monitor_connection()
+
+    assert health_calls == 7
+    assert status_calls == 2
+
+
+@pytest.mark.asyncio
 async def test_unexpected_chat_socket_close_runs_real_reconnect_path_once(
     monkeypatch: pytest.MonkeyPatch, qtbot: Any
 ) -> None:
