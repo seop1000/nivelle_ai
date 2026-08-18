@@ -63,6 +63,57 @@ def test_health_and_pairing(tmp_path: Path) -> None:
         assert status.json()["metrics"]["last_request"] is None
 
 
+def test_paired_token_remains_valid_after_server_restart(tmp_path: Path) -> None:
+    first_app = create_app(tmp_path)
+    with TestClient(first_app) as client:
+        paired = client.post(
+            "/api/v1/pairing/complete",
+            json={
+                "code": first_app.state.services.pairing.code,
+                "device_name": "restart-test",
+            },
+        )
+        token = paired.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        assert client.get("/api/v1/memories", headers=headers).status_code == 200
+
+    restarted_app = create_app(tmp_path)
+    with TestClient(restarted_app) as restarted:
+        assert restarted.get("/health").status_code == 200
+        assert restarted.get("/api/v1/memories", headers=headers).status_code == 200
+        assert restarted.get("/api/v1/pairing/status").json()["pairing_required"] is False
+
+
+def test_revoked_token_remains_invalid_after_server_restart(tmp_path: Path) -> None:
+    first_app = create_app(tmp_path)
+    with TestClient(first_app) as client:
+        paired = client.post(
+            "/api/v1/pairing/complete",
+            json={
+                "code": first_app.state.services.pairing.code,
+                "device_name": "revoked-test",
+            },
+        )
+        client_id = paired.json()["client_id"]
+        token = paired.json()["token"]
+
+    asyncio.run(
+        first_app.state.services.db.execute(
+            "UPDATE clients SET revoked_at=? WHERE id=?",
+            ("2026-08-18T00:00:00+00:00", client_id),
+        )
+    )
+
+    restarted_app = create_app(tmp_path)
+    with TestClient(restarted_app) as restarted:
+        response = restarted.get(
+            "/api/v1/memories",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 401
+        assert restarted.get("/api/v1/pairing/status").json()["pairing_required"] is True
+
+
 def test_authenticated_status_exposes_bind_and_advertised_addresses(tmp_path: Path) -> None:
     ethernet = InterfaceCandidate(
         interface_index=9,

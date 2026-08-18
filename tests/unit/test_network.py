@@ -142,6 +142,43 @@ async def test_reconnect_backoff_persists_until_full_connection_is_confirmed(
 
 
 @pytest.mark.asyncio
+async def test_scheduled_reconnect_escalates_after_post_health_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = ConnectionProfile(id="server", host="192.168.0.20")
+    manager = ConnectionManager([profile])
+    manager.reconnect_backoff_seconds = 0.001
+
+    async def health_connects() -> ConnectionProfile:
+        manager.active = profile
+        manager.state = ConnectionState.AUTHENTICATING
+        return profile
+
+    async def authentication_fails(_profile: ConnectionProfile) -> None:
+        manager.disconnect(manual=False)
+
+    async def fully_connects(_profile: ConnectionProfile) -> None:
+        manager.mark_connected()
+
+    monkeypatch.setattr(network.random, "uniform", lambda _start, _end: 0.0)
+    monkeypatch.setattr(manager, "connect", health_connects)
+
+    failed_attempt = manager.schedule_reconnect(authentication_fails)
+    assert failed_attempt is not None
+    await failed_attempt
+
+    assert manager.active is None
+    assert manager.reconnect_backoff_seconds == 0.002
+
+    successful_attempt = manager.schedule_reconnect(fully_connects)
+    assert successful_attempt is not None
+    await successful_attempt
+
+    assert manager.state == ConnectionState.CONNECTED
+    assert manager.reconnect_backoff_seconds == 1.0
+
+
+@pytest.mark.asyncio
 async def test_network_client_supports_authenticated_admin_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -12,8 +12,10 @@ Components:
 
 import asyncio
 import pytest
+from types import SimpleNamespace
 from uuid import uuid4
 
+from nivelle_link import app as client_app
 from nivelle_link.network import ConnectionManager, ConnectionState, NetworkClient
 from nivelle_link.agent_controller import AgentController
 from nivelle_link.agent.runtime import AgentRuntime
@@ -23,9 +25,6 @@ from nivelle_protocol.tools import (
     ClientCapabilities, ToolPlatform, ToolCapability,
     ToolRequest, ToolStatus, RiskLevel, ApprovalMode as ProtocolApprovalMode
 )
-from tests.conftest import FakeConnectionManager, FakeNetworkClient
-
-
 # =============================================================================
 # BUG NIV-LINK-NET-001: ConnectionManager doesn't classify error types
 # =============================================================================
@@ -119,7 +118,7 @@ class TestBugNIVLINKNET003WebSocketDeduplication:
     """BUG NIV-LINK-NET-003: Multiple WebSocket connections possible."""
 
     @pytest.mark.asyncio
-    async def test_ensure_chat_connection_idempotent(self, fake_network_client: FakeNetworkClient):
+    async def test_ensure_chat_connection_idempotent(self, fake_network_client):
         """Multiple ensure_chat_connection calls should not create multiple connections."""
         # First call
         await fake_network_client.ensure_chat_connection()
@@ -131,6 +130,63 @@ class TestBugNIVLINKNET003WebSocketDeduplication:
 
         # Should only have one connection
         # (Fake implementation doesn't track multiple, but real one should)
+
+
+# =============================================================================
+# BUG NIV-LINK-NET-004: Transient auth failure disables automatic reconnect
+# =============================================================================
+
+class TestBugNIVLINKNET004AuthenticationReconnect:
+    """BUG NIV-LINK-NET-004: A transient 401/403 must remain reconnectable."""
+
+    def test_auth_failure_during_connect_keeps_auto_reconnect_alive(self):
+        """A restarting server may briefly reject a valid saved token."""
+        profile = ConnectionProfile(id="lan", host="192.168.0.20")
+        application = object.__new__(client_app.NivelleLinkApplication)
+        application.connections = ConnectionManager([profile])
+        application.connections.active = profile
+        application.connections.state = ConnectionState.AUTHENTICATING
+        application.client = SimpleNamespace(token="saved-token")
+        application._authentication_failures = 0
+        application._cancel_connection_monitor = lambda: None
+        application._cancel_auto_reconnect = lambda: None
+        application._schedule_chat_close = lambda: None
+        application._set_connection_state = lambda _state: None
+        reconnects = []
+        application._schedule_auto_reconnect = lambda: reconnects.append(True)
+
+        application._handle_authentication_failure()
+
+        assert application.connections.state == ConnectionState.RECONNECT_WAIT
+        assert application.connections.active is None
+        assert application.connections.auto_reconnect_enabled is True
+        assert application.client.token == "saved-token"
+        assert reconnects == [True]
+
+    def test_repeated_auth_failure_stops_automatic_reconnect(self):
+        """A revoked or invalid token must not be retried forever."""
+        profile = ConnectionProfile(id="lan", host="192.168.0.20")
+        application = object.__new__(client_app.NivelleLinkApplication)
+        application.connections = ConnectionManager([profile])
+        application.connections.active = profile
+        application.connections.state = ConnectionState.AUTHENTICATING
+        application.client = SimpleNamespace(token="revoked-token")
+        application._authentication_failures = 0
+        application._cancel_connection_monitor = lambda: None
+        application._cancel_auto_reconnect = lambda: None
+        application._schedule_chat_close = lambda: None
+        application._set_connection_state = lambda _state: None
+        reconnects = []
+        application._schedule_auto_reconnect = lambda: reconnects.append(True)
+
+        application._handle_authentication_failure()
+        application._handle_authentication_failure()
+
+        assert application.connections.state == ConnectionState.FAILED
+        assert application.connections.active is None
+        assert application.connections.auto_reconnect_enabled is False
+        assert application.client.token is None
+        assert reconnects == [True]
 
 
 # =============================================================================
@@ -359,6 +415,7 @@ class TestClientBugIDRegistry:
             "NIV-LINK-NET-001",  # Error classification
             "NIV-LINK-NET-002",  # Reconnection backoff
             "NIV-LINK-NET-003",  # WebSocket deduplication
+            "NIV-LINK-NET-004",  # Authentication reconnect
             "NIV-LINK-AGENT-001", # Approval timeout
             "NIV-LINK-AGENT-002", # Duplicate requests
             "NIV-LINK-AGENT-003", # Blocking execution
@@ -369,4 +426,4 @@ class TestClientBugIDRegistry:
         for bug_id in bug_ids:
             print(f"Documented: {bug_id}")
 
-        assert len(bug_ids) == 8
+        assert len(bug_ids) == 9

@@ -149,7 +149,7 @@ def test_incompatible_protocol_is_visible_and_blocks_chat_preflight(
 
 
 @pytest.mark.asyncio
-async def test_connected_auth_failure_leaves_authenticating_and_disables_reconnect(
+async def test_transient_auth_failure_reconnects_and_preserves_token(
     monkeypatch: pytest.MonkeyPatch, qtbot: Any
 ) -> None:
     profile = ConnectionProfile(id="lan", host="192.168.0.20")
@@ -159,7 +159,72 @@ async def test_connected_auth_failure_leaves_authenticating_and_disables_reconne
     qtbot.addWidget(application.window)
     application.connections.active = profile
     errors: list[str] = []
+    reconnects: list[bool] = []
+    status_calls = 0
+    chat_connections = 0
     monkeypatch.setattr(application.window, "show_error", errors.append)
+    monkeypatch.setattr(
+        application, "_schedule_auto_reconnect", lambda: reconnects.append(True)
+    )
+    monkeypatch.setattr(application, "_ensure_connection_monitor", lambda: None)
+
+    async def get(_path: str) -> object:
+        nonlocal status_calls
+        status_calls += 1
+        if status_calls == 1:
+            request = httpx.Request("GET", "http://192.168.0.20:8765/api/v1/status")
+            response = httpx.Response(401, request=request)
+            raise httpx.HTTPStatusError("unauthorized", request=request, response=response)
+        return {
+            "protocol_version": "1.0",
+            "model_name": "test",
+            "uptime_seconds": 1,
+        }
+
+    async def ensure_chat_connection() -> None:
+        nonlocal chat_connections
+        chat_connections += 1
+
+    monkeypatch.setattr(application.client, "get", get)
+    monkeypatch.setattr(application.client, "ensure_chat_connection", ensure_chat_connection)
+
+    await application._connected(profile)
+
+    assert application.connections.state == ConnectionState.RECONNECT_WAIT
+    assert application.connections.active is None
+    assert application.connections.auto_reconnect_enabled is True
+    assert application.client.token == "expired"
+    assert application.window.status.text() == "재연결 중… (0회)"
+    assert reconnects == [True]
+    assert errors and "자동으로 다시 연결" in errors[-1]
+
+    application.connections.active = profile
+    await application._connected(profile)
+
+    assert application.connections.state == ConnectionState.CONNECTED
+    assert application.connections.auto_reconnect_enabled is True
+    assert application.client.token == "expired"
+    assert application._authentication_failures == 0
+    assert status_calls == 2
+    assert chat_connections == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_auth_failure_disables_reconnect_without_keyring_deletion(
+    monkeypatch: pytest.MonkeyPatch, qtbot: Any
+) -> None:
+    profile = ConnectionProfile(id="lan", host="192.168.0.20")
+    monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [profile])
+    monkeypatch.setattr(client_app, "load_token_for_profile", lambda _profile: "revoked")
+    application = client_app.NivelleLinkApplication()
+    qtbot.addWidget(application.window)
+    application.connections.active = profile
+    reconnects: list[bool] = []
+    errors: list[str] = []
+    monkeypatch.setattr(application.window, "show_error", errors.append)
+    monkeypatch.setattr(
+        application, "_schedule_auto_reconnect", lambda: reconnects.append(True)
+    )
 
     async def get(_path: str) -> object:
         request = httpx.Request("GET", "http://192.168.0.20:8765/api/v1/status")
@@ -169,14 +234,118 @@ async def test_connected_auth_failure_leaves_authenticating_and_disables_reconne
     monkeypatch.setattr(application.client, "get", get)
 
     await application._connected(profile)
-    await asyncio.sleep(0)
+    application.connections.active = profile
+    await application._connected(profile)
 
     assert application.connections.state == ConnectionState.FAILED
     assert application.connections.active is None
     assert application.connections.auto_reconnect_enabled is False
     assert application.client.token is None
-    assert application.window.status.text() == "오프라인"
+    assert reconnects == [True]
     assert errors and "새 페어링" in errors[-1]
+
+
+@pytest.mark.asyncio
+async def test_missing_token_and_incomplete_pairing_clears_stale_active_profile(
+    monkeypatch: pytest.MonkeyPatch, qtbot: Any
+) -> None:
+    profile = ConnectionProfile(id="lan", host="192.168.0.20")
+    monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [profile])
+    monkeypatch.setattr(client_app, "load_token_for_profile", lambda _profile: None)
+    application = client_app.NivelleLinkApplication()
+    qtbot.addWidget(application.window)
+    application.connections.active = profile
+
+    async def pairing_not_completed(_profile: ConnectionProfile) -> bool:
+        return False
+
+    monkeypatch.setattr(application, "_pair_if_required", pairing_not_completed)
+
+    await application._connected(profile)
+
+    assert application.connections.state == ConnectionState.FAILED
+    assert application.connections.active is None
+    assert application.connections.auto_reconnect_enabled is False
+    assert application.client.token is None
+
+
+@pytest.mark.asyncio
+async def test_server_restart_recovers_after_network_and_transient_auth_failures(
+    monkeypatch: pytest.MonkeyPatch, qtbot: Any
+) -> None:
+    profile = ConnectionProfile(id="lan", host="192.168.0.20")
+    monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [profile])
+    monkeypatch.setattr(client_app, "load_token_for_profile", lambda _profile: "saved")
+    monkeypatch.setattr(client_network.random, "uniform", lambda _start, _end: 0.0)
+    application = client_app.NivelleLinkApplication()
+    qtbot.addWidget(application.window)
+    application.connections.active = profile
+    application.connections.mark_connected()
+    application.connections.reconnect_backoff_seconds = 0.001
+    application.client.token = "saved"
+    application._schedule_chat_close = lambda: None
+    application._ensure_connection_monitor = lambda: None
+    errors: list[str] = []
+    monkeypatch.setattr(application.window, "show_error", errors.append)
+    connected_event = asyncio.Event()
+    set_connection_state = application._set_connection_state
+
+    def record_connection_state(state: ConnectionState | str) -> None:
+        set_connection_state(state)
+        if state == ConnectionState.CONNECTED:
+            connected_event.set()
+
+    monkeypatch.setattr(application, "_set_connection_state", record_connection_state)
+
+    probe_calls = 0
+    status_calls = 0
+    chat_connections = 0
+
+    async def probe(_profile: ConnectionProfile) -> None:
+        nonlocal probe_calls
+        probe_calls += 1
+        if probe_calls == 1:
+            request = httpx.Request("GET", "http://192.168.0.20:8765/health")
+            raise httpx.ConnectError("server restarting", request=request)
+
+    async def get(_path: str) -> object:
+        nonlocal status_calls
+        status_calls += 1
+        if status_calls == 1:
+            request = httpx.Request("GET", "http://192.168.0.20:8765/api/v1/status")
+            response = httpx.Response(401, request=request)
+            raise httpx.HTTPStatusError("unauthorized", request=request, response=response)
+        return {
+            "protocol_version": "1.0",
+            "model_name": "test",
+            "uptime_seconds": 1,
+        }
+
+    async def ensure_chat_connection() -> None:
+        nonlocal chat_connections
+        chat_connections += 1
+
+    monkeypatch.setattr(application.connections, "_probe", probe)
+    monkeypatch.setattr(application.client, "get", get)
+    monkeypatch.setattr(application.client, "ensure_chat_connection", ensure_chat_connection)
+
+    application._mark_connection_lost()
+
+    await asyncio.wait_for(connected_event.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    assert probe_calls == 3
+    assert status_calls == 2
+    assert chat_connections == 1
+    assert application.connections.active is profile
+    assert application.connections.state == ConnectionState.CONNECTED
+    assert application.connections.auto_reconnect_enabled is True
+    assert application.connections.reconnect_backoff_seconds == 1.0
+    assert application.client.token == "saved"
+    assert application._authentication_failures == 0
+    assert application._auto_reconnect_task is None
+    assert application.connections.reconnect_task is None
+    assert errors and "자동으로 다시 연결" in errors[-1]
 
 
 @pytest.mark.asyncio

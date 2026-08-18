@@ -259,6 +259,9 @@ class ConnectionManager:
                 on_attempt()
             profile = await self.connect()
             if profile is not None:
+                # Preserve escalation unless authenticated status and the
+                # authoritative WebSocket call `mark_connected()` successfully.
+                self.reconnect_backoff_seconds = min(delay * 2, 30)
                 await on_connected(profile)
                 return
             self.reconnect_backoff_seconds = min(delay * 2, 30)

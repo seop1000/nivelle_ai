@@ -32,6 +32,8 @@ from .storage import (
 )
 from .windows import ConnectionDialog, MainChatWindow, PairingDialog
 
+AUTHENTICATION_FAILURES_BEFORE_PAIRING = 2
+
 
 class NivelleLinkApplication:
     def __init__(self, *, gateway_endpoint: str | None = None) -> None:
@@ -86,6 +88,7 @@ class NivelleLinkApplication:
         self._chat_close_task: asyncio.Task[None] | None = None
         self._reconnect_attempts = 0
         self._status_failures = 0
+        self._authentication_failures = 0
         self._last_server_status: dict[str, Any] = {}
         self._protocol_compatible = True
         self._protocol_warning: str | None = None
@@ -811,6 +814,7 @@ class NivelleLinkApplication:
             self.window.raise_()
             self.window.activateWindow()
             return
+        self._authentication_failures = 0
         self.connections.auto_reconnect_enabled = True
         if self.connections.state == ConnectionState.MANUAL_OFFLINE:
             self.connections.state = ConnectionState.DISCONNECTED
@@ -912,12 +916,21 @@ class NivelleLinkApplication:
     def _mark_authentication_required(self) -> None:
         self._cancel_connection_monitor()
         self._cancel_auto_reconnect()
-        self.connections.active = None
-        self.connections.state = ConnectionState.FAILED
+        self.connections.disconnect(manual=False)
         self.connections.auto_reconnect_enabled = False
+        self.connections.state = ConnectionState.FAILED
         self.client.token = None
         self._schedule_chat_close()
         self._set_connection_state(ConnectionState.FAILED)
+
+    def _handle_authentication_failure(self) -> bool:
+        """Retry one ambiguous auth failure, then require explicit repair."""
+        self._authentication_failures += 1
+        if self._authentication_failures < AUTHENTICATION_FAILURES_BEFORE_PAIRING:
+            self._mark_connection_lost()
+            return True
+        self._mark_authentication_required()
+        return False
 
     def _publish_connection_context(self, state: str) -> None:
         updater = getattr(self.window, "set_connection_context", None)
@@ -1035,9 +1048,11 @@ class NivelleLinkApplication:
                         raise TypeError("서버가 올바르지 않은 상태 응답을 반환했습니다.")
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code in {401, 403}:
-                        self._mark_authentication_required()
+                        retrying = self._handle_authentication_failure()
                         self.window.show_error(
-                            "서버 인증이 만료되었습니다. 새 페어링이 필요합니다."
+                            "서버 인증 확인에 일시적으로 실패했습니다. 자동으로 다시 연결합니다."
+                            if retrying
+                            else "서버 인증이 만료되었습니다. 새 페어링이 필요합니다."
                         )
                         return
                     self._status_failures += 1
@@ -1067,6 +1082,7 @@ class NivelleLinkApplication:
                     self.window.show_error(str(exc))
                     return
                 self._status_failures = 0
+                self._authentication_failures = 0
                 self._apply_server_status(status)
                 agent_status = status.get("agent")
                 if isinstance(agent_status, dict) and agent_status.get("enabled"):
@@ -1179,15 +1195,14 @@ class NivelleLinkApplication:
 
         if not self.client.token and not await self._pair_if_required(profile):
             self.window.model.setText("모델: 페어링 필요")
-            self.connections.state = ConnectionState.FAILED
-            self._set_connection_state(ConnectionState.FAILED)
-            self._set_remote_controls_enabled(False)
+            self._mark_authentication_required()
             return
 
         try:
             status = await self.client.get("/api/v1/status")
             if not isinstance(status, dict):
                 raise TypeError("서버가 올바르지 않은 상태 응답을 반환했습니다.")
+            self._authentication_failures = 0
             self._apply_server_status(status)
             await self.client.ensure_chat_connection()
             agent_status = status.get("agent")
@@ -1215,9 +1230,11 @@ class NivelleLinkApplication:
                 await self._refresh_persona()
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in {401, 403}:
-                self._mark_authentication_required()
+                retrying = self._handle_authentication_failure()
                 self.window.show_error(
-                    "이 서버의 인증 정보가 유효하지 않습니다. "
+                    "서버 인증 확인에 일시적으로 실패했습니다. 자동으로 다시 연결합니다."
+                    if retrying
+                    else "이 서버의 인증 정보가 유효하지 않습니다. "
                     "서버 관리자에게 새 페어링을 요청하세요."
                 )
             else:
