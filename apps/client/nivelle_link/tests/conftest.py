@@ -2,19 +2,15 @@
 
 import asyncio
 import tempfile
+from collections.abc import Generator
 from pathlib import Path
-from typing import AsyncGenerator, Generator
 from uuid import uuid4
 
 import pytest
-import pytest_asyncio
-
-from nivelle_link.network import ConnectionManager, NetworkClient
-from nivelle_link.agent_controller import AgentController
 from nivelle_link.agent.runtime import AgentRuntime
-from nivelle_link.storage import client_data_dir
+from nivelle_link.agent_controller import AgentController
+from nivelle_link.network import ConnectionManager, NetworkClient
 from nivelle_protocol.settings import ConnectionProfile
-from nivelle_protocol.tools import ClientCapabilities, ToolPlatform
 
 
 @pytest.fixture(scope="session")
@@ -37,7 +33,7 @@ def test_connection_profiles() -> list[ConnectionProfile]:
     """Create test connection profiles."""
     return [
         ConnectionProfile(
-            name="test-local",
+            id="test-local",
             host="127.0.0.1",
             port=8080,
             tls=False,
@@ -45,7 +41,7 @@ def test_connection_profiles() -> list[ConnectionProfile]:
             priority=1,
         ),
         ConnectionProfile(
-            name="test-remote",
+            id="test-remote",
             host="example.com",
             port=443,
             tls=True,
@@ -122,7 +118,7 @@ class FakeConnectionManager:
         if self.should_succeed:
             from nivelle_protocol.settings import ConnectionProfile
             self.active = ConnectionProfile(
-                name="fake",
+                id="fake",
                 host="127.0.0.1",
                 port=8080,
                 tls=False,
