@@ -188,6 +188,80 @@ class TestBugNIVLINKNET004AuthenticationReconnect:
         assert application.client.token is None
         assert reconnects == [True]
 
+    @pytest.mark.asyncio
+    async def test_client_restart_recovers_without_resaving_same_ip(
+        self, monkeypatch, qtbot
+    ):
+        """A fresh Link process must not need an unchanged profile to be saved again."""
+        server_id = "31c2cc21-65cc-4ab7-9258-b77497347b1b"
+        persisted = ConnectionProfile(
+            id="primary",
+            host="192.168.219.102",
+            server_id=server_id,
+        )
+
+        failed = object.__new__(client_app.NivelleLinkApplication)
+        failed.connections = ConnectionManager([persisted])
+        failed.connections.active = persisted
+        failed.connections.state = ConnectionState.AUTHENTICATING
+        failed.client = SimpleNamespace(token="saved-token")
+        failed._authentication_failures = 0
+        failed._cancel_connection_monitor = lambda: None
+        failed._cancel_auto_reconnect = lambda: None
+        failed._schedule_chat_close = lambda: None
+        failed._set_connection_state = lambda _state: None
+        failed._schedule_auto_reconnect = lambda: None
+        failed._handle_authentication_failure()
+        failed._handle_authentication_failure()
+        assert failed.connections.auto_reconnect_enabled is False
+
+        reloaded = ConnectionProfile.model_validate(persisted.model_dump(mode="json"))
+        monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [reloaded])
+        monkeypatch.setattr(
+            client_app,
+            "load_token_for_server",
+            lambda _profile, _server_id: "saved-token",
+        )
+        saved_profiles = []
+        monkeypatch.setattr(
+            client_app,
+            "save_connection_profiles",
+            lambda profiles: saved_profiles.append(list(profiles)),
+        )
+        monkeypatch.setattr(client_app, "save_token_for_server", lambda *_args: None)
+
+        restarted = client_app.NivelleLinkApplication()
+        qtbot.addWidget(restarted.window)
+        restarted.connections.active = reloaded
+        monkeypatch.setattr(restarted, "_ensure_connection_monitor", lambda: None)
+
+        async def status(_path):
+            return {
+                "server_id": server_id,
+                "protocol_version": "1.0",
+                "model_name": "test",
+                "uptime_seconds": 1,
+            }
+
+        async def connect_chat():
+            return None
+
+        monkeypatch.setattr(restarted.client, "get", status)
+        monkeypatch.setattr(
+            restarted.client,
+            "ensure_chat_connection",
+            connect_chat,
+        )
+
+        await restarted._connected(reloaded)
+
+        assert restarted.connections.state == ConnectionState.CONNECTED
+        assert restarted.connections.active == reloaded
+        assert restarted.connections.auto_reconnect_enabled is True
+        assert restarted.client.token == "saved-token"
+        assert restarted.connections.active.host == "192.168.219.102"
+        assert saved_profiles == []
+
 
 # =============================================================================
 # BUG NIV-LINK-AGENT-001: AgentController approval timeout handling
