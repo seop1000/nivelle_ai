@@ -3,6 +3,7 @@ import json
 import tomllib
 from pathlib import Path
 
+import nivelle_protocol.version as version_module
 import pytest
 from nivelle_protocol.version import (
     APP_VERSION,
@@ -60,6 +61,23 @@ def test_runtime_identity_uses_available_build_metadata_and_executable(tmp_path:
     assert identity.build_time == "2026-08-03T10:00:00Z"
     assert identity.executable_path == str(executable.resolve())
     assert identity.frozen is True
+
+
+def test_development_version_exposes_verified_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A development updater build must identify the source commit it runs."""
+
+    monkeypatch.setattr(
+        version_module,
+        "APP_VERSION",
+        "0.4.0-dev.g02f602ebe68d",
+    )
+
+    identity = runtime_identity("nivelle-core", environ={})
+
+    assert identity.app_version == "0.4.0-dev.g02f602ebe68d"
+    assert identity.build_commit == "02f602ebe68d"
 
 
 def test_startup_log_is_structured_and_contains_no_unrelated_environment_secret(

@@ -14,6 +14,7 @@ from typing import Literal, TextIO
 from pydantic import BaseModel
 
 _APP_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
+_DEVELOPMENT_VERSION_PATTERN = re.compile(r"(?:^|-)dev\.g(?P<commit>[0-9a-fA-F]{12})(?:$|[.+-])")
 
 
 def _load_app_version() -> str:
@@ -158,9 +159,14 @@ def runtime_identity(
     )
     resolved_executable = str(Path(executable_value).expanduser().resolve())
     build_commit = source.get("NIVELLE_BUILD_COMMIT") or source.get("NOZOMI_BUILD_COMMIT") or None
+    if build_commit is None:
+        development = _DEVELOPMENT_VERSION_PATTERN.search(APP_VERSION)
+        if development is not None:
+            build_commit = development.group("commit").lower()
     build_time = source.get("NIVELLE_BUILD_TIME") or source.get("NOZOMI_BUILD_TIME") or None
     return RuntimeIdentity(
         component=component,
+        app_version=APP_VERSION,
         build_commit=build_commit,
         build_time=build_time,
         executable_path=resolved_executable,
