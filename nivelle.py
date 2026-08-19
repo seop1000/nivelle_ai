@@ -148,7 +148,7 @@ def configure_real_model(runtime: RuntimePaths) -> None:
 
         configured_models = existing.get("models")
         automatic_model_paths = {
-            "qwen3.5-27b-q4-k-m": runtime.model_path,
+            "ministral-3-14b-instruct-2512-q4-k-m": runtime.model_path,
             "qwen3.5-9b-q4-k-m": runtime.fallback_model_path or runtime.model_path,
         }
         if isinstance(configured_models, list):
@@ -198,8 +198,8 @@ def configure_real_model(runtime: RuntimePaths) -> None:
         fallback_enabled=False,
         models=[
             ModelEntry(
-                id="qwen3.5-27b-q4-k-m",
-                name="Qwen3.5-27B Q4_K_M",
+                id="ministral-3-14b-instruct-2512-q4-k-m",
+                name="Ministral-3-14B-Instruct-2512 Q4_K_M",
                 path=portable_reference(runtime.model_path),
                 role="primary",
                 enabled=True,

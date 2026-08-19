@@ -26,13 +26,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 RUNTIME_ROOT = PROJECT_ROOT / "runtime"
 
 PRIMARY_MODEL_URL = (
-    "https://huggingface.co/bartowski/Qwen_Qwen3.5-27B-GGUF/resolve/"
-    "d7b113c40283f4d99f4eb0ec20d126ad653cc736/"
-    "Qwen_Qwen3.5-27B-Q4_K_M.gguf?download=true"
+    "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512-GGUF/resolve/"
+    "main/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf?download=true"
 )
-PRIMARY_MODEL_SIZE = 17_984_872_928
-PRIMARY_MODEL_SHA256 = "81657841d62f1821c748d0fea6c260b7d3508844fe4e9250253ef81c4e4d9edf"
-PRIMARY_MODEL_PATH = RUNTIME_ROOT / "models" / "Qwen_Qwen3.5-27B-Q4_K_M.gguf"
+PRIMARY_MODEL_SIZE = 8_200_000_000  # TODO: Replace with exact byte size
+PRIMARY_MODEL_SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"  # TODO: Replace with exact SHA-256
+PRIMARY_MODEL_PATH = RUNTIME_ROOT / "models" / "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf"
 
 FALLBACK_MODEL_URL = (
     "https://huggingface.co/bartowski/Qwen_Qwen3.5-9B-GGUF/resolve/"
