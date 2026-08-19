@@ -496,7 +496,7 @@ def ensure_runtime() -> RuntimePaths:
         PRIMARY_MODEL_PATH,
         PRIMARY_MODEL_SIZE,
         PRIMARY_MODEL_SHA256,
-        "Qwen3.5-27B Q4_K_M primary model",
+        "Ministral-3-14B-Instruct-2512 Q4_K_M primary model",
     )
     server_path = _ensure_llama_server()
     return RuntimePaths(

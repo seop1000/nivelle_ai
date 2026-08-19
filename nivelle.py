@@ -88,10 +88,10 @@ def wait_for_llama(
         if process.poll() is not None:
             raise SystemExit(
                 "llama-server가 모델 로딩 중 종료되었습니다. "
-                "별도 Qwen3.5-9B 콘솔의 오류를 확인하세요."
+                "별도 llama.cpp 콘솔의 오류를 확인하세요."
             )
         time.sleep(1)
-    raise SystemExit("10분 안에 Qwen3.5-9B 모델이 준비되지 않았습니다.")
+    raise SystemExit("10분 안에 모델이 준비되지 않았습니다.")
 
 
 def configure_real_model(runtime: RuntimePaths) -> None:
@@ -330,7 +330,7 @@ def _selected_model(models: ModelsSettings) -> tuple[str, Path | None]:
     if selected is None:
         selected = enabled[0] if enabled else None
     return (
-        selected.name if selected is not None else "Qwen3.5-9B",
+        selected.name if selected is not None else "Ministral-3-14B-Instruct-2512",
         selected.path if selected is not None else None,
     )
 
@@ -411,7 +411,7 @@ def start_llama(
         )
     if not model_path.is_file():
         raise SystemExit(
-            "Qwen 모델 파일을 찾을 수 없습니다.\n"
+            "모델 파일을 찾을 수 없습니다.\n"
             f"확인한 경로: {model_path}\n"
             "서버를 다시 실행하면 기본 모델 경로를 복구합니다. 사용자 지정 모델이라면 "
             "서버 관리자 설정에서 올바른 GGUF 파일을 선택하세요."
@@ -541,7 +541,7 @@ def main() -> int:
     if args.mode == "client":
         return run_client(gateway_endpoint) if gateway_endpoint else run_client()
 
-    print("Qwen3.5 primary/fallback 모델 및 llama.cpp 설치 상태를 확인합니다.")
+    print("Ministral-3-14B primary/fallback 모델 및 llama.cpp 설치 상태를 확인합니다.")
     runtime = ensure_runtime()
     configure_real_model(runtime)
     settings = load_launcher_settings()
