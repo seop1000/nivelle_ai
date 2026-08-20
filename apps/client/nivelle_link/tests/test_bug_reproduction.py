@@ -264,6 +264,74 @@ class TestBugNIVLINKNET004AuthenticationReconnect:
         assert restarted.connections.active.server_id == server_id
         assert saved_profiles and saved_profiles[-1][0].server_id == server_id
 
+    @pytest.mark.asyncio
+    async def test_client_startup_retries_saved_ip_while_core_starts(
+        self, monkeypatch, qtbot
+    ):
+        """A temporarily unavailable saved Core must not require the settings dialog."""
+        server_id = "31c2cc21-65cc-4ab7-9258-b77497347b1b"
+        persisted = ConnectionProfile(id="primary", host="192.168.219.102")
+        monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [persisted])
+        monkeypatch.setattr(
+            client_app,
+            "load_token_for_server",
+            lambda _profile, _server_id: "saved-token",
+        )
+        monkeypatch.setattr(client_app, "save_connection_profiles", lambda _profiles: None)
+        monkeypatch.setattr(client_app, "save_token_for_server", lambda *_args: None)
+
+        class UnexpectedConnectionDialog:
+            def __init__(self, *_args, **_kwargs):
+                raise AssertionError("saved profiles must keep retrying in the background")
+
+        monkeypatch.setattr(client_app, "ConnectionDialog", UnexpectedConnectionDialog)
+        restarted = client_app.NivelleLinkApplication()
+        qtbot.addWidget(restarted.window)
+        restarted.connections.reconnect_backoff_seconds = 0.001
+        monkeypatch.setattr(restarted, "_ensure_connection_monitor", lambda: None)
+        probe_calls = 0
+
+        async def probe(profile):
+            nonlocal probe_calls
+            probe_calls += 1
+            if probe_calls == 1:
+                raise OSError("Core is still starting")
+            profile_key = restarted.connections._profile_key(profile)
+            restarted.connections._observed_server_ids[profile_key] = server_id
+
+        async def status(_path):
+            return {
+                "server_id": server_id,
+                "protocol_version": "1.0",
+                "model_name": "test",
+                "uptime_seconds": 1,
+            }
+
+        async def connect_chat():
+            return None
+
+        monkeypatch.setattr(restarted.connections, "_probe", probe)
+        monkeypatch.setattr(restarted.client, "get", status)
+        monkeypatch.setattr(
+            restarted.client,
+            "ensure_chat_connection",
+            connect_chat,
+        )
+
+        await restarted.start()
+
+        async def wait_until_connected():
+            while restarted.connections.state != ConnectionState.CONNECTED:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_until_connected(), timeout=1)
+
+        assert probe_calls == 2
+        assert restarted.connections.active is not None
+        assert restarted.connections.active.host == "192.168.219.102"
+        assert restarted.connections.active.server_id == server_id
+        assert restarted.client.token == "saved-token"
+
 
 # =============================================================================
 # BUG NIV-LINK-AGENT-001: AgentController approval timeout handling

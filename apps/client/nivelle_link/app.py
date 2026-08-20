@@ -1172,6 +1172,14 @@ class NivelleLinkApplication:
                     await self._connected(connected)
                     return
                 error_message = self._connection_failure_message(saved_profile=True)
+                if (
+                    self.connections.auto_reconnect_enabled
+                    and any(profile.enabled for profile in self.connections.profiles)
+                ):
+                    self.connections.state = ConnectionState.RECONNECT_WAIT
+                    self._set_connection_state(ConnectionState.RECONNECT_WAIT)
+                    self._schedule_auto_reconnect()
+                    return
 
             while True:
                 dialog = ConnectionDialog(selected, error_message, self.window)
