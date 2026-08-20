@@ -190,12 +190,11 @@ class TestBugNIVLINKNET004AuthenticationReconnect:
     async def test_client_restart_recovers_without_resaving_same_ip(
         self, monkeypatch, qtbot
     ):
-        """A fresh Link process must not need an unchanged profile to be saved again."""
+        """A fresh Link process must use its saved profile without opening the dialog."""
         server_id = "31c2cc21-65cc-4ab7-9258-b77497347b1b"
         persisted = ConnectionProfile(
             id="primary",
             host="192.168.219.102",
-            server_id=server_id,
         )
 
         failed = object.__new__(client_app.NivelleLinkApplication)
@@ -230,8 +229,11 @@ class TestBugNIVLINKNET004AuthenticationReconnect:
 
         restarted = client_app.NivelleLinkApplication()
         qtbot.addWidget(restarted.window)
-        restarted.connections.active = reloaded
         monkeypatch.setattr(restarted, "_ensure_connection_monitor", lambda: None)
+
+        async def probe(profile):
+            profile_key = restarted.connections._profile_key(profile)
+            restarted.connections._observed_server_ids[profile_key] = server_id
 
         async def status(_path):
             return {
@@ -244,6 +246,7 @@ class TestBugNIVLINKNET004AuthenticationReconnect:
         async def connect_chat():
             return None
 
+        monkeypatch.setattr(restarted.connections, "_probe", probe)
         monkeypatch.setattr(restarted.client, "get", status)
         monkeypatch.setattr(
             restarted.client,
@@ -251,14 +254,15 @@ class TestBugNIVLINKNET004AuthenticationReconnect:
             connect_chat,
         )
 
-        await restarted._connected(reloaded)
+        await restarted.start()
 
         assert restarted.connections.state == ConnectionState.CONNECTED
-        assert restarted.connections.active == reloaded
+        assert restarted.connections.active is not None
         assert restarted.connections.auto_reconnect_enabled is True
         assert restarted.client.token == "saved-token"
         assert restarted.connections.active.host == "192.168.219.102"
-        assert saved_profiles == []
+        assert restarted.connections.active.server_id == server_id
+        assert saved_profiles and saved_profiles[-1][0].server_id == server_id
 
 
 # =============================================================================
