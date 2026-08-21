@@ -152,16 +152,38 @@ def configure_real_model(runtime: RuntimePaths) -> None:
             "qwen3.5-9b-q4-k-m": runtime.fallback_model_path or runtime.model_path,
         }
         if isinstance(configured_models, list):
+            configured_model_ids = {
+                str(model.get("id"))
+                for model in configured_models
+                if isinstance(model, dict)
+            }
             for model in configured_models:
                 if not isinstance(model, dict):
-                    continue
-                runtime_model_path = automatic_model_paths.get(str(model.get("id")))
-                if runtime_model_path is None:
                     continue
                 configured_model = model.get("path")
                 if not configured_model:
                     continue
                 configured_path = Path(str(configured_model))
+                model_id = str(model.get("id"))
+                if (
+                    model_id == "qwen3.5-27b-q4-k-m"
+                    and model.get("role") == "primary"
+                    and "ministral-3-14b-instruct-2512-q4-k-m"
+                    not in configured_model_ids
+                    and automatic_runtime_reference(configured_path, kind="model")
+                    and configured_path.name.casefold()
+                    == "Qwen_Qwen3.5-27B-Q4_K_M.gguf".casefold()
+                ):
+                    model.update(
+                        id="ministral-3-14b-instruct-2512-q4-k-m",
+                        name="Ministral-3-14B-Instruct-2512 Q4_K_M",
+                        path=str(portable_reference(runtime.model_path)),
+                    )
+                    changed = True
+                    continue
+                runtime_model_path = automatic_model_paths.get(model_id)
+                if runtime_model_path is None:
+                    continue
                 if automatic_runtime_reference(configured_path, kind="model"):
                     replacement = portable_reference(runtime_model_path)
                     if configured_path != replacement:
@@ -187,7 +209,7 @@ def configure_real_model(runtime: RuntimePaths) -> None:
             os.replace(temporary, config_path)
         finally:
             temporary.unlink(missing_ok=True)
-        print("포터블 위치 변경을 감지하여 Qwen/llama.cpp 경로를 현재 폴더로 복구했습니다.")
+        print("포터블 위치 변경을 감지하여 모델/llama.cpp 경로를 현재 폴더로 복구했습니다.")
         return
 
     config_path.parent.mkdir(parents=True, exist_ok=True)

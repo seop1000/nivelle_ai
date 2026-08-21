@@ -1,5 +1,5 @@
-mode: mock
-llama_server_path: null
+mode: external
+llama_server_path: runtime/llama.cpp/b10231/llama-server.exe
 provider_endpoint: http://127.0.0.1:8080
 fallback_enabled: false
 models:

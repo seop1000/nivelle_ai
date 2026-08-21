@@ -27,10 +27,13 @@ RUNTIME_ROOT = PROJECT_ROOT / "runtime"
 
 PRIMARY_MODEL_URL = (
     "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512-GGUF/resolve/"
-    "main/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf?download=true"
+    "fb49df4a3cde2c774da8def12437118a66c4f5cf/"
+    "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf?download=true"
 )
-PRIMARY_MODEL_SIZE = 8_200_000_000  # TODO: Replace with exact byte size
-PRIMARY_MODEL_SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"  # TODO: Replace with exact SHA-256
+PRIMARY_MODEL_SIZE = 8_239_593_024
+PRIMARY_MODEL_SHA256 = (
+    "824e0f3373e69b84f2cae46fdcb9bd1ebc6ab3bfc7acc125d818b7b8178cc613"
+)
 PRIMARY_MODEL_PATH = RUNTIME_ROOT / "models" / "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf"
 
 FALLBACK_MODEL_URL = (

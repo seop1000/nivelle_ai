@@ -7,7 +7,16 @@ import yaml
 from nivelle_protocol.settings import InferenceSettings, ModelEntry, ModelsSettings, ServerSettings
 
 import nivelle
-from nivelle_runtime import RuntimePaths
+from nivelle_runtime import (
+    FALLBACK_MODEL_PATH,
+    FALLBACK_MODEL_SHA256,
+    FALLBACK_MODEL_SIZE,
+    PRIMARY_MODEL_PATH,
+    PRIMARY_MODEL_SHA256,
+    PRIMARY_MODEL_SIZE,
+    PRIMARY_MODEL_URL,
+    RuntimePaths,
+)
 
 
 def _runtime(root: Path, suffix: str = "") -> RuntimePaths:
@@ -19,6 +28,48 @@ def _runtime(root: Path, suffix: str = "") -> RuntimePaths:
 
 def _argument(command: list[str], name: str) -> str:
     return command[command.index(name) + 1]
+
+
+def test_pinned_runtime_uses_official_ministral_primary_and_qwen_fallback() -> None:
+    assert PRIMARY_MODEL_PATH.name == "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf"
+    assert PRIMARY_MODEL_SIZE == 8_239_593_024
+    assert (
+        PRIMARY_MODEL_SHA256
+        == "824e0f3373e69b84f2cae46fdcb9bd1ebc6ab3bfc7acc125d818b7b8178cc613"
+    )
+    assert "fb49df4a3cde2c774da8def12437118a66c4f5cf" in PRIMARY_MODEL_URL
+    assert FALLBACK_MODEL_PATH.name == "Qwen_Qwen3.5-9B-Q4_K_M.gguf"
+    assert FALLBACK_MODEL_SIZE == 6_169_341_984
+    assert (
+        FALLBACK_MODEL_SHA256
+        == "d784ce9eda1a5a7b51e8f705a9e6310844bf4f173654d115823c775fdea56d43"
+    )
+
+
+def test_default_launcher_selects_ministral_primary_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("NIVELLE_CORE_DATA_DIR", str(data_dir))
+    runtime = RuntimePaths(
+        model_path=tmp_path / "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
+        server_path=tmp_path / "llama-server.exe",
+        fallback_model_path=tmp_path / "Qwen_Qwen3.5-9B-Q4_K_M.gguf",
+    )
+
+    nivelle.configure_real_model(runtime)
+
+    payload = yaml.safe_load(
+        (data_dir / "config" / "models.yaml").read_text(encoding="utf-8")
+    )
+    models = ModelsSettings.model_validate(payload)
+    assert [(model.id, model.role) for model in models.models] == [
+        ("ministral-3-14b-instruct-2512-q4-k-m", "primary"),
+        ("qwen3.5-9b-q4-k-m", "fallback"),
+    ]
+    command = nivelle.llama_command(runtime, models, InferenceSettings())
+    assert Path(_argument(command, "--model")) == runtime.model_path
+    assert _argument(command, "--alias") == "Ministral-3-14B-Instruct-2512 Q4_K_M"
 
 
 def test_configure_real_model_bootstraps_once_and_preserves_existing_file(
@@ -97,6 +148,72 @@ def test_configure_real_model_repairs_paths_after_portable_folder_moves(
     )
     assert Path(command[0]) == server.resolve()
     assert Path(_argument(command, "--model")) == model.resolve()
+
+
+def test_configure_real_model_migrates_legacy_automatic_qwen_primary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install = tmp_path / "Nivelle Portable"
+    server = install / "runtime" / "llama.cpp" / "b10231" / "llama-server.exe"
+    ministral = (
+        install
+        / "runtime"
+        / "models"
+        / "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf"
+    )
+    qwen_27b = install / "runtime" / "models" / "Qwen_Qwen3.5-27B-Q4_K_M.gguf"
+    qwen_9b = install / "runtime" / "models" / "Qwen_Qwen3.5-9B-Q4_K_M.gguf"
+    server.parent.mkdir(parents=True)
+    ministral.parent.mkdir(parents=True)
+    for path in (server, ministral, qwen_27b, qwen_9b):
+        path.write_bytes(b"artifact")
+
+    data_dir = tmp_path / "data"
+    config_dir = data_dir / "config"
+    config_dir.mkdir(parents=True)
+    monkeypatch.setenv("NIVELLE_CORE_DATA_DIR", str(data_dir))
+    monkeypatch.setattr(nivelle, "ROOT", install)
+    config_path = config_dir / "models.yaml"
+    config_path.write_text(
+        "mode: external\n"
+        "llama_server_path: runtime/llama.cpp/b10231/llama-server.exe\n"
+        "provider_endpoint: http://127.0.0.1:8080\n"
+        "fallback_enabled: false\n"
+        "models:\n"
+        "  - id: qwen3.5-27b-q4-k-m\n"
+        "    name: Qwen3.5-27B Q4_K_M\n"
+        "    path: runtime/models/Qwen_Qwen3.5-27B-Q4_K_M.gguf\n"
+        "    role: primary\n"
+        "    enabled: true\n"
+        "  - id: qwen3.5-9b-q4-k-m\n"
+        "    name: Qwen3.5-9B Q4_K_M\n"
+        "    path: runtime/models/Qwen_Qwen3.5-9B-Q4_K_M.gguf\n"
+        "    role: fallback\n"
+        "    enabled: true\n",
+        encoding="utf-8",
+    )
+    runtime = RuntimePaths(
+        model_path=ministral,
+        server_path=server,
+        fallback_model_path=qwen_9b,
+    )
+
+    nivelle.configure_real_model(runtime)
+
+    migrated = ModelsSettings.model_validate(
+        yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    )
+    assert [(model.id, model.role) for model in migrated.models] == [
+        ("ministral-3-14b-instruct-2512-q4-k-m", "primary"),
+        ("qwen3.5-9b-q4-k-m", "fallback"),
+    ]
+    assert migrated.models[0].name == "Ministral-3-14B-Instruct-2512 Q4_K_M"
+    assert migrated.models[0].path == Path(
+        "runtime/models/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf"
+    )
+    command = nivelle.llama_command(runtime, migrated, InferenceSettings())
+    assert Path(_argument(command, "--model")) == ministral.resolve()
+    assert qwen_27b.is_file()
 
 
 def test_start_llama_reports_missing_configured_executable_before_spawn(
