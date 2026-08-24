@@ -49,10 +49,10 @@ class ConversationRepository:
             return None
         rows = await self.db.fetchall(
             """
-            SELECT role,content FROM (
-                SELECT id,role,content,created_at FROM messages
+            SELECT * FROM (
+                SELECT id,role,content,created_at,state,metadata_json,client_message_id
+                FROM messages
                 WHERE conversation_id=?
-                  AND state='completed'
                   AND role IN ('user','assistant')
                 ORDER BY created_at DESC,id DESC
                 LIMIT ?
@@ -61,7 +61,38 @@ class ConversationRepository:
             """,
             (conversation_id, HISTORY_MESSAGE_LIMIT),
         )
-        return [dict(row) for row in rows]
+        history: list[dict[str, object]] = []
+        pending_user: dict[str, object] | None = None
+        for row in rows:
+            message = dict(row)
+            if message["role"] == "user":
+                pending_user = message if message["state"] == "completed" else None
+                continue
+            if pending_user is None:
+                continue
+            assistant_metadata = _metadata_dict(message.get("metadata_json"))
+            reply_to = assistant_metadata.get("in_reply_to_client_message_id")
+            client_message_id = pending_user.get("client_message_id")
+            linked = (
+                not reply_to
+                or not client_message_id
+                or str(reply_to) == str(client_message_id)
+            )
+            if message["state"] == "completed" and linked:
+                history.extend(
+                    (
+                        {
+                            "role": "user",
+                            "content": str(pending_user["content"]),
+                        },
+                        {
+                            "role": "assistant",
+                            "content": str(message["content"]),
+                        },
+                    )
+                )
+            pending_user = None
+        return history
 
     async def add_message(
         self,

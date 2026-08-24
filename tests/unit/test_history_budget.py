@@ -9,7 +9,7 @@ from nivelle_core.repositories import ConversationRepository
 
 
 @pytest.mark.asyncio
-async def test_completed_history_uses_index_and_returns_only_latest_twenty(
+async def test_completed_history_uses_index_and_returns_only_complete_turns(
     tmp_path: Path,
 ) -> None:
     database = Database(tmp_path / "nivelle.db")
@@ -41,7 +41,10 @@ async def test_completed_history_uses_index_and_returns_only_latest_twenty(
 
     assert history is not None
     assert [message["content"] for message in history] == [
-        f"history-{index:02}" for index in range(5, 25)
+        f"history-{index:02}" for index in range(6, 24)
+    ]
+    assert [message["role"] for message in history] == [
+        "user" if index % 2 == 0 else "assistant" for index in range(6, 24)
     ]
     assert "idx_messages_conversation_history" in {row["name"] for row in indexes}
 

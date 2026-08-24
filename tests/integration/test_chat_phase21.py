@@ -450,6 +450,8 @@ def test_controlled_retry_accepts_interrupted_and_rejects_completed_target(
         "completed",
     ]
     assert len(capturing.calls) == 1
+    assert [message.role for message in capturing.calls[0]] == ["system", "user"]
+    assert capturing.calls[0][-1].content == "통제된 새 재시도"
 
 
 def test_startup_recovers_generating_and_orphan_user_turns(tmp_path: Path) -> None:

@@ -357,6 +357,19 @@ class PersonaService:
             )
             for result in tool_results
         ]
+        current_user = PromptMessage(
+            "user",
+            (
+                "\n\n".join(
+                    [
+                        *(result.content for result in untrusted_results),
+                        f"[현재 사용자 요청]\n{request}",
+                    ]
+                )
+                if untrusted_results
+                else request
+            ),
+        )
 
         # 긴 대화 전체를 매 요청마다 다시 처리하지 않는다.
         recent_history = list(history[-10:])
@@ -369,8 +382,7 @@ class PersonaService:
 
             fixed_characters = (
                 len(system)
-                + len(request)
-                + sum(len(result.content) for result in untrusted_results)
+                + len(current_user.content)
             )
 
             if fixed_characters > input_character_budget:
@@ -387,8 +399,7 @@ class PersonaService:
         return [
             PromptMessage("system", system),
             *recent_history,
-            *untrusted_results,
-            PromptMessage("user", request),
+            current_user,
         ]
 
     def generation_token_budget(self, configured_max_tokens: int) -> int:
@@ -406,13 +417,17 @@ class PersonaService:
     ) -> list[PromptMessage]:
         selected: list[PromptMessage] = []
         remaining = max(character_budget, 0)
-        for message in reversed(history):
-            size = len(message.content)
+        end = len(history)
+        while end >= 2:
+            turn = list(history[end - 2 : end])
+            if [message.role for message in turn] != ["user", "assistant"]:
+                break
+            size = sum(len(message.content) for message in turn)
             if size > remaining:
                 break
-            selected.append(message)
+            selected[0:0] = turn
             remaining -= size
-        selected.reverse()
+            end -= 2
         return selected
 
     def _read(self, name: str) -> dict[str, Any]:

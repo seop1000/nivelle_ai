@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -10,6 +11,10 @@ from typing import Any, Protocol, cast
 import httpx
 from nivelle_protocol.server_status import GenerationMetrics
 from nivelle_protocol.settings import InferenceSettings
+
+_LOGGER = logging.getLogger(__name__)
+# b10231 caps direct counts at 2,000 and rejects expanded rule_count * repetition >= 2,000.
+_LLAMA_CPP_MAX_REPETITION = 2_000
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,59 @@ def _nonnegative_float(value: object) -> float | None:
 
 def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _grammar_safe_json_schema(value: object) -> object:
+    """Relax only string bounds that b10231 cannot encode as GBNF repetitions."""
+
+    if isinstance(value, Mapping):
+        result = {
+            str(key): _grammar_safe_json_schema(item) for key, item in value.items()
+        }
+        for keyword in ("minLength", "maxLength"):
+            bound = result.get(keyword)
+            if (
+                isinstance(bound, int)
+                and not isinstance(bound, bool)
+                and bound >= _LLAMA_CPP_MAX_REPETITION
+            ):
+                result.pop(keyword)
+        return result
+    if isinstance(value, list):
+        return [_grammar_safe_json_schema(item) for item in value]
+    return value
+
+
+def _grammar_safe_tool_definition(tool: Mapping[str, object]) -> dict[str, object]:
+    result = dict(tool)
+    function = tool.get("function")
+    if not isinstance(function, Mapping):
+        return result
+    safe_function = dict(function)
+    parameters = function.get("parameters")
+    if isinstance(parameters, Mapping):
+        safe_function["parameters"] = _grammar_safe_json_schema(parameters)
+    result["function"] = safe_function
+    return result
+
+
+def _log_message_roles(messages: Sequence[PromptMessage]) -> None:
+    roles = [message.role for message in messages]
+    conversational = roles[1:] if roles[:1] == ["system"] else roles
+    expected = "user"
+    valid = bool(conversational)
+    for role in conversational:
+        if role != expected:
+            valid = False
+            break
+        expected = "assistant" if role == "user" else "user"
+    log = _LOGGER.debug if valid else _LOGGER.warning
+    log(
+        "llama.cpp request roles=%s message_count=%d alternation_valid=%s",
+        " -> ".join(roles),
+        len(roles),
+        valid,
+    )
 
 
 def generation_metrics_from_payload(payload: Mapping[str, Any]) -> GenerationMetrics:
@@ -195,6 +253,7 @@ class LlamaCppServerProvider:
     def request_payload(self, messages: Sequence[PromptMessage]) -> dict[str, object]:
         """Build the OpenAI-compatible request from the current saved settings."""
 
+        _log_message_roles(messages)
         payload: dict[str, object] = {
             "messages": [item.__dict__ for item in messages],
             "stream": self.inference.streaming,
@@ -229,7 +288,7 @@ class LlamaCppServerProvider:
         payload = self.request_payload(messages)
         payload["stream"] = False
         payload.pop("stream_options", None)
-        payload["tools"] = [dict(tool) for tool in tools]
+        payload["tools"] = [_grammar_safe_tool_definition(tool) for tool in tools]
         payload["tool_choice"] = "auto"
         async with httpx.AsyncClient(
             timeout=self.inference.request_timeout,

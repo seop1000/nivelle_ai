@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import AsyncIterator, Sequence
 
 import httpx
@@ -12,6 +13,8 @@ from nivelle_core.llm import (
 )
 from nivelle_protocol.server_status import GenerationMetrics
 from nivelle_protocol.settings import InferenceSettings
+from nivelle_protocol.tools import TOOL_REGISTRY
+from pydantic import ValidationError
 
 
 async def test_mock_streams_user_message() -> None:
@@ -54,6 +57,38 @@ def test_streaming_request_asks_backend_for_real_usage() -> None:
     payload = provider.request_payload([PromptMessage("user", "hello")])
 
     assert payload["stream_options"] == {"include_usage": True}
+
+
+def test_llama_request_logs_role_sequence_without_message_content(caplog) -> None:
+    provider = LlamaCppServerProvider(
+        "http://127.0.0.1:8080", InferenceSettings(streaming=False)
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="nivelle_core.llm"):
+        provider.request_payload(
+            [
+                PromptMessage("system", "secret-system-content"),
+                PromptMessage("user", "secret-user-content"),
+            ]
+        )
+        provider.request_payload(
+            [
+                PromptMessage("system", "other-secret-system-content"),
+                PromptMessage("user", "first-secret-user-content"),
+                PromptMessage("user", "second-secret-user-content"),
+            ]
+        )
+
+    assert "roles=system -> user" in caplog.text
+    assert "message_count=2" in caplog.text
+    assert "alternation_valid=True" in caplog.text
+    assert "roles=system -> user -> user" in caplog.text
+    assert "alternation_valid=False" in caplog.text
+    assert "secret-system-content" not in caplog.text
+    assert "secret-user-content" not in caplog.text
+    assert "other-secret-system-content" not in caplog.text
+    assert "first-secret-user-content" not in caplog.text
+    assert "second-secret-user-content" not in caplog.text
 
 
 def test_llama_metrics_parse_usage_and_native_timings_without_estimating() -> None:
@@ -208,6 +243,66 @@ async def test_native_tool_planning_returns_only_structured_function_calls() -> 
     assert proposals[0].tool_call_id == "call-1"
     assert proposals[0].name == "get_system_status"
     assert proposals[0].arguments == {}
+
+
+async def test_native_tool_planning_relaxes_only_grammar_unsafe_string_bounds() -> None:
+    definition = TOOL_REGISTRY.get("create_note")
+    advertised = [item.model_tool_definition() for item in TOOL_REGISTRY.definitions]
+    advertised.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "repetition_boundary",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "safe": {"type": "string", "maxLength": 1_999},
+                        "at_limit": {"type": "string", "maxLength": 2_000},
+                    },
+                },
+            },
+        }
+    )
+    original_parameters = definition.arguments_json_schema()
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"tool_calls": []}}]})
+
+    provider = LlamaCppServerProvider(
+        "http://llama.local",
+        InferenceSettings(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert await provider.plan_tools(
+        [PromptMessage("user", "긴 메모를 만들어줘")],
+        advertised,
+        max_calls=1,
+    ) == []
+
+    sent_functions = {
+        item["function"]["name"]: item["function"] for item in captured["tools"]
+    }
+    create_note = sent_functions["create_note"]["parameters"]["properties"]
+    open_folder = sent_functions["open_folder"]["parameters"]["properties"]
+    set_reminder = sent_functions["set_reminder"]["parameters"]["properties"]
+    boundary = sent_functions["repetition_boundary"]["parameters"]["properties"]
+    assert create_note["title"]["maxLength"] == 200
+    assert "maxLength" not in create_note["content"]
+    assert "maxLength" not in open_folder["path"]
+    assert "maxLength" not in set_reminder["reminder_text"]
+    assert boundary["safe"]["maxLength"] == 1_999
+    assert "maxLength" not in boundary["at_limit"]
+    assert original_parameters["properties"]["content"]["maxLength"] == 100_000
+    definition.argument_schema.model_validate(
+        {"title": "긴 메모", "content": "가" * 100_000, "format": "txt"}
+    )
+    with pytest.raises(ValidationError, match="string_too_long"):
+        definition.argument_schema.model_validate(
+            {"title": "긴 메모", "content": "가" * 100_001, "format": "txt"}
+        )
 
 
 async def test_native_tool_planning_rejects_malformed_arguments_without_execution() -> None:

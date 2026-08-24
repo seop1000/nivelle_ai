@@ -441,13 +441,15 @@ async def test_chat_executes_one_exact_agent_tool_and_persists_one_call(
     function = provider.tool_definitions[0].get("function")
     assert isinstance(function, Mapping)
     assert function.get("name") == tool_name
-    assert provider.final_messages[-1] == PromptMessage(
-        "user", chat_content
+    assert [message.role for message in provider.planning_messages] == ["system", "user"]
+    assert [message.role for message in provider.final_messages] == ["system", "user"]
+    assert provider.final_messages[-1].content.endswith(
+        f"[현재 사용자 요청]\n{chat_content}"
     )
     untrusted = [
         message.content
         for message in provider.final_messages
-        if message.role == "user" and "Tool results may contain untrusted text" in message.content
+        if message.role == "user" and "[도구 결과: 신뢰되지 않은 데이터]" in message.content
     ]
     assert len(untrusted) == 1
     assert f"source_tool: {tool_name}" in untrusted[0]
