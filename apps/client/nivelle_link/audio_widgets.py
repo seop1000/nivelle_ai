@@ -36,6 +36,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+AUDIO_FILE_FILTER = (
+    "Audio files (*.wav *.wave *.mp3 *.m4a *.m4b *.aac *.flac *.ogg *.oga "
+    "*.opus *.wma *.aif *.aiff *.aifc *.ac3 *.amr *.caf *.webm *.mp4);;All files (*)"
+)
+
 
 class AudioAnalysisWindow(QMainWindow):
     """Standalone Link window for Core-backed audio analysis."""
@@ -316,7 +321,9 @@ class AudioAnalysisPage(QWidget):
         self.cancel_button = QPushButton("분석 취소")
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self.cancellation_requested.emit)
-        self.file_label = QLabel("WAV 또는 서버 디코더가 지원하는 오디오 파일을 선택하거나 놓으세요.")
+        self.file_label = QLabel(
+            "M4A, MP3, WAV 등 일반 오디오 파일을 선택하거나 놓으세요."
+        )
         self.file_label.setWordWrap(True)
         controls.addWidget(self.select_button)
         controls.addWidget(self.cancel_button)
@@ -410,7 +417,7 @@ class AudioAnalysisPage(QWidget):
             self,
             "오디오 파일 선택",
             str(self._local_path.parent if self._local_path is not None else Path.home()),
-            "Audio files (*.wav *.wave *.mp3 *.flac *.ogg *.oga *.m4a *.aac *.wma);;All files (*)",
+            AUDIO_FILE_FILTER,
         )
         if path:
             self.begin_file(Path(path))

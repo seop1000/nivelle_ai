@@ -4,6 +4,7 @@ import asyncio
 import cmath
 import copy
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -34,9 +35,44 @@ SPECTROGRAM_BINS = 64
 FFT_SIZE = 512
 MAX_RETAINED_JOBS = 32
 SUPPORTED_EXTENSIONS = frozenset(
-    {".wav", ".wave", ".mp3", ".flac", ".ogg", ".oga", ".m4a", ".aac", ".wma"}
+    {
+        ".aac",
+        ".ac3",
+        ".aif",
+        ".aifc",
+        ".aiff",
+        ".amr",
+        ".caf",
+        ".flac",
+        ".m4a",
+        ".m4b",
+        ".mp3",
+        ".mp4",
+        ".oga",
+        ".ogg",
+        ".opus",
+        ".wav",
+        ".wave",
+        ".webm",
+        ".wma",
+    }
 )
 _FFMPEG_EXTENSIONS = SUPPORTED_EXTENSIONS - {".wav", ".wave"}
+_FFMPEG_FORMATS = [
+    "MP3",
+    "M4A/M4B",
+    "AAC",
+    "FLAC",
+    "OGG/OGA",
+    "Opus",
+    "WMA",
+    "AIFF",
+    "AC-3",
+    "AMR",
+    "CAF",
+    "WebM",
+    "MP4 audio",
+]
 
 
 class AudioAnalysisError(RuntimeError):
@@ -51,11 +87,27 @@ class AudioAnalysisCancelled(AudioAnalysisError):
         super().__init__("cancelled", "Audio analysis was cancelled.")
 
 
+def _ffmpeg_executable() -> str | None:
+    """Resolve the packaged decoder first, with a system install as fallback."""
+    try:
+        module = importlib.import_module("imageio_ffmpeg")
+        getter = getattr(module, "get_ffmpeg_exe", None)
+        if callable(getter):
+            value = getter()
+            if isinstance(value, (str, os.PathLike)):
+                candidate = Path(value).expanduser().resolve(strict=True)
+                if candidate.is_file():
+                    return str(candidate)
+    except (ImportError, OSError, RuntimeError, TypeError):
+        pass
+    return shutil.which("ffmpeg")
+
+
 def audio_capabilities() -> dict[str, Any]:
-    ffmpeg_available = shutil.which("ffmpeg") is not None
+    ffmpeg_available = _ffmpeg_executable() is not None
     formats = ["WAV"]
     if ffmpeg_available:
-        formats.extend(["MP3", "FLAC", "OGG", "M4A", "AAC", "WMA"])
+        formats.extend(_FFMPEG_FORMATS)
     return {
         "analysis_version": AUDIO_ANALYSIS_VERSION,
         "formats": formats,
@@ -545,7 +597,7 @@ def _probe_audio(path: Path, cancellation: threading.Event) -> dict[str, Any]:
 def _decode_with_ffmpeg(
     path: Path, cancellation: threading.Event, progress: Callable[[float, str], None]
 ) -> tuple[Path, dict[str, Any]]:
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _ffmpeg_executable()
     if ffmpeg is None:
         raise AudioAnalysisError(
             "decoder_unavailable",

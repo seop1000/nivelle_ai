@@ -1,11 +1,13 @@
 import hashlib
 import math
 import struct
+import subprocess
 import threading
 import wave
 from pathlib import Path
 
 import pytest
+from nivelle_core import audio_analysis
 from nivelle_core.audio_analysis import (
     AudioAnalysisCancelled,
     AudioAnalysisError,
@@ -81,6 +83,51 @@ def test_stereo_unicode_filename_keeps_channels_separate(tmp_path: Path) -> None
     assert result["metadata"]["channels"] == 2
     assert [item["label"] for item in result["waveform"]["channels"]] == ["L", "R"]
     assert result["metrics"]["rms_by_channel"][0] > result["metrics"]["rms_by_channel"][1]
+
+
+@pytest.mark.parametrize(
+    ("suffix", "codec"),
+    [(".mp3", "libmp3lame"), (".m4a", "aac")],
+)
+def test_packaged_ffmpeg_decodes_common_audio_formats(
+    tmp_path: Path, suffix: str, codec: str
+) -> None:
+    source = write_wav(tmp_path / "source.wav")
+    target = tmp_path / f"recording{suffix}"
+    ffmpeg = audio_analysis._ffmpeg_executable()
+
+    assert ffmpeg is not None
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            str(source),
+            "-c:a",
+            codec,
+            str(target),
+        ],
+        check=False,
+        capture_output=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    result = analyze_audio_file(target)
+
+    assert result["metadata"]["format"] == suffix.removeprefix(".").upper()
+    assert result["metadata"]["duration_seconds"] > 0
+    assert result["waveform"]["channels"]
+
+
+def test_audio_capabilities_advertise_packaged_common_formats() -> None:
+    capabilities = audio_analysis.audio_capabilities()
+
+    assert capabilities["ffmpeg_available"] is True
+    assert {"WAV", "MP3", "M4A/M4B", "Opus"} <= set(capabilities["formats"])
 
 
 @pytest.mark.parametrize("sample_width", [1, 3, 4])

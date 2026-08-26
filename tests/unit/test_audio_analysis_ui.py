@@ -2,7 +2,11 @@ from pathlib import Path
 from typing import Any
 
 from nivelle_link import app as client_app
-from nivelle_link.audio_widgets import AudioAnalysisPage, AudioAnalysisWindow
+from nivelle_link.audio_widgets import (
+    AUDIO_FILE_FILTER,
+    AudioAnalysisPage,
+    AudioAnalysisWindow,
+)
 from nivelle_link.windows import MainChatWindow, ServerConsoleWindow
 
 RESULT = {
@@ -90,6 +94,11 @@ def test_audio_page_emits_unicode_selected_path(
 
     assert signal.args == [str(path)]
     assert str(path) in page.file_label.text()
+
+
+def test_audio_file_picker_includes_common_compressed_formats() -> None:
+    for extension in ("*.mp3", "*.m4a", "*.flac", "*.ogg", "*.opus", "*.wma"):
+        assert extension in AUDIO_FILE_FILTER
 
 
 def test_application_connects_standalone_audio_window_once(

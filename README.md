@@ -90,10 +90,11 @@ Link 메뉴의 Core 관리 화면에서는 Gateway와 `llama-server`의 실제 �
 토큰과 seed는 다음 추론부터 적용됩니다. 포트, 컨텍스트 크기, GPU 레이어, 스레드, 배치,
 모델 경로 변경은 `pending_restart`로 표시되며 관련 프로세스를 재시작한 뒤 적용됩니다.
 
-Link의 `≡` 메뉴에서 독립된 `오디오 분석` 창을 열어 WAV 또는 Core의 FFmpeg가
-디코딩할 수 있는 파일을 선택하면 채널별 waveform, spectrogram, 기본 음향 metric을
+Link의 `≡` 메뉴에서 독립된 `오디오 분석` 창을 열어 M4A, MP3, WAV 등 일반 오디오
+파일을 선택하면 채널별 waveform, spectrogram, 기본 음향 metric을
 확인하고 재생·seek·zoom할 수 있습니다. Core 관리 화면과 Core의 로컬 보안 관리 UI에는
-오디오 기능이 없습니다. 분석은 Core worker에서 실행되고 파일 내용 hash로 캐시됩니다.
+오디오 기능이 없습니다. 압축 오디오는 서버에 함께 설치되는 FFmpeg로 디코딩되며,
+분석은 Core worker에서 실행되고 파일 내용 hash로 캐시됩니다.
 포맷과 한계는 [Core Audio Analysis](docs/AUDIO_ANALYSIS.md)를 참고하십시오.
 
 `models.yaml`에서 `external_url`을 지정하면 Core는 로컬 llama 프로세스를 시작하지

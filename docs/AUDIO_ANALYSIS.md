@@ -23,11 +23,13 @@ Link select/drop
 ## 포맷
 
 - PCM WAV 8/16/24/32-bit: Python 표준 라이브러리로 항상 지원
-- MP3, FLAC, OGG/OGA, M4A, AAC, WMA: Core 호스트에서 `ffmpeg`가 발견될 때 지원
+- MP3, M4A/M4B, AAC, FLAC, OGG/OGA, Opus, WMA, AIFF, AC-3, AMR, CAF,
+  WebM 및 MP4의 오디오 스트림: Core와 함께 설치되는 FFmpeg로 지원
 
-FFmpeg는 고정 인자 배열과 `shell=False` 경계로 호출한다. FFmpeg가 없는 배포에서 비-WAV
-파일은 명시적인 decoder unavailable 오류가 되며 성공으로 보고하지 않는다. Qt 재생 지원과
-Core 분석 디코더 지원은 별개다.
+FFmpeg는 `imageio-ffmpeg`의 플랫폼별 바이너리를 우선 사용하고 시스템 FFmpeg를 fallback으로
+사용한다. 고정 인자 배열과 `shell=False` 경계로 호출한다. 디코더를 찾을 수 없는 비정상
+배포에서 비-WAV 파일은 명시적인 decoder unavailable 오류가 되며 성공으로 보고하지 않는다.
+Qt 재생 지원과 Core 분석 디코더 지원은 별개다.
 
 ## 분석 데이터
 
