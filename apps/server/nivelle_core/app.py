@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 import time
 from contextlib import asynccontextmanager
@@ -6,7 +7,8 @@ from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Annotated, Any
-from uuid import UUID
+from urllib.parse import unquote
+from uuid import UUID, uuid4
 
 import aiosqlite
 import httpx
@@ -48,7 +50,14 @@ from nivelle_protocol.version import (
 )
 from pydantic import ValidationError
 
+from .admin_control import CoreAdminControl
 from .agent_gateway import AgentGateway, AgentGatewayError, AgentSessionHandle
+from .audio_analysis import (
+    MAX_UPLOAD_BYTES,
+    SUPPORTED_EXTENSIONS,
+    AudioAnalysisManager,
+    audio_capabilities,
+)
 from .auth import PairingService
 from .backend_status import probe_openai_backend
 from .config import ConfigService, IncompleteSettingsError
@@ -144,6 +153,7 @@ class Services:
             ),
         )
         self.agent_gateway = AgentGateway(self.tool_orchestrator)
+        self.audio_analysis = AudioAnalysisManager(root / "audio-analysis")
         self.telemetry = TelemetryProvider()
         self.active_generations = 0
         self.active_conversation_generations: set[str] = set()
@@ -155,6 +165,44 @@ class Services:
         self.last_request_metrics: GenerationMetrics | None = None
         self.network_runtime = network_runtime
         self.server_id: str | None = None
+        self.runtime_loop: asyncio.AbstractEventLoop | None = None
+        self.client_websockets: dict[str, set[WebSocket]] = {}
+        self.core_admin = CoreAdminControl(
+            self.db,
+            self.pairing,
+            self.agent_gateway,
+            server_id=lambda: self.server_id,
+            network_status=lambda: (
+                self.network_runtime.status_dict()
+                if self.network_runtime is not None
+                else None
+            ),
+            disconnect_client=self.disconnect_client,
+        )
+
+    def register_client_websocket(self, client_id: str, websocket: WebSocket) -> None:
+        self.client_websockets.setdefault(client_id, set()).add(websocket)
+
+    def unregister_client_websocket(self, client_id: str, websocket: WebSocket) -> None:
+        sockets = self.client_websockets.get(client_id)
+        if sockets is None:
+            return
+        sockets.discard(websocket)
+        if not sockets:
+            self.client_websockets.pop(client_id, None)
+
+    async def disconnect_client(self, client_id: str) -> None:
+        """Terminate every live transport after local token revocation."""
+
+        sockets = tuple(self.client_websockets.pop(client_id, ()))
+        try:
+            await self.agent_gateway.disconnect_client(client_id)
+        finally:
+            for websocket in sockets:
+                try:
+                    await websocket.close(4403, "Core에서 인증이 해제되었습니다.")
+                except RuntimeError:
+                    pass
 
     def provider(self) -> MockLLMProvider | LlamaCppServerProvider:
         models = ModelsSettings.model_validate(self.config.load("models"))
@@ -347,7 +395,12 @@ def create_app(
                 "Nivelle Link pairing is required. Retrieve the one-time code from "
                 "/api/v1/pairing/local-code on the Core PC."
             )
-        yield
+        services.runtime_loop = asyncio.get_running_loop()
+        try:
+            yield
+        finally:
+            await services.audio_analysis.shutdown()
+            services.runtime_loop = None
 
     app = FastAPI(title="Nivelle Core Gateway", version=APP_VERSION, lifespan=lifespan)
     app.state.services = services
@@ -786,6 +839,91 @@ def create_app(
             raise HTTPException(404, "설정 섹션이 없습니다.") from exc
         return {"valid": True}
 
+    @app.get("/api/v1/audio-analysis/capabilities")
+    async def audio_analysis_capabilities(
+        _: str = Depends(administrator),
+    ) -> dict[str, Any]:
+        return audio_capabilities()
+
+    @app.post("/api/v1/audio-analysis/jobs", status_code=202)
+    async def create_audio_analysis_job(
+        request: Request,
+        _: str = Depends(administrator),
+    ) -> dict[str, Any]:
+        raw_name = request.headers.get("x-nivelle-filename", "audio.wav")
+        try:
+            filename = unquote(raw_name, encoding="utf-8", errors="strict").strip()
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise HTTPException(400, "오디오 파일 이름이 올바르지 않습니다.") from exc
+        if (
+            not filename
+            or len(filename) > 255
+            or Path(filename).name != filename
+            or re.search(r'[<>:"/\\|?*\x00-\x1f]', filename) is not None
+        ):
+            raise HTTPException(400, "오디오 파일 이름이 올바르지 않습니다.")
+        suffix = Path(filename).suffix.casefold()
+        if suffix not in SUPPORTED_EXTENSIONS:
+            raise HTTPException(415, "지원하지 않는 오디오 파일 형식입니다.")
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_size = int(content_length)
+            except ValueError as exc:
+                raise HTTPException(400, "Content-Length가 올바르지 않습니다.") from exc
+            if declared_size < 0:
+                raise HTTPException(400, "Content-Length가 올바르지 않습니다.")
+            if declared_size == 0:
+                raise HTTPException(400, "빈 오디오 파일은 분석할 수 없습니다.")
+            if declared_size > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, "오디오 파일은 256 MiB 이하여야 합니다.")
+
+        upload_directory = services.audio_analysis.upload_directory
+        upload_directory.mkdir(parents=True, exist_ok=True)
+        upload_path = upload_directory / f"{uuid4().hex}{suffix}"
+        digest = hashlib.sha256()
+        size_bytes = 0
+        try:
+            with upload_path.open("xb") as stream:
+                async for chunk in request.stream():
+                    size_bytes += len(chunk)
+                    if size_bytes > MAX_UPLOAD_BYTES:
+                        raise HTTPException(413, "오디오 파일은 256 MiB 이하여야 합니다.")
+                    digest.update(chunk)
+                    stream.write(chunk)
+                stream.flush()
+            if size_bytes < 1:
+                raise HTTPException(400, "빈 오디오 파일은 분석할 수 없습니다.")
+            return services.audio_analysis.start(
+                upload_path,
+                filename=filename,
+                content_hash=digest.hexdigest(),
+                size_bytes=size_bytes,
+            )
+        except BaseException:
+            upload_path.unlink(missing_ok=True)
+            raise
+
+    @app.get("/api/v1/audio-analysis/jobs/{job_id}")
+    async def get_audio_analysis_job(
+        job_id: str,
+        _: str = Depends(administrator),
+    ) -> dict[str, Any]:
+        value = services.audio_analysis.get(job_id)
+        if value is None:
+            raise HTTPException(404, "오디오 분석 작업을 찾을 수 없습니다.")
+        return value
+
+    @app.delete("/api/v1/audio-analysis/jobs/{job_id}")
+    async def cancel_audio_analysis_job(
+        job_id: str,
+        _: str = Depends(administrator),
+    ) -> dict[str, Any]:
+        value = services.audio_analysis.cancel(job_id)
+        if value is None:
+            raise HTTPException(404, "오디오 분석 작업을 찾을 수 없습니다.")
+        return value
+
     @app.websocket("/ws/v1/agent")
     async def agent_channel(websocket: WebSocket) -> None:
         auth = websocket.headers.get("authorization", "")
@@ -802,6 +940,7 @@ def create_app(
             await websocket.close(4403, "Agent 오케스트레이션이 비활성화되어 있습니다.")
             return
         await websocket.accept()
+        services.register_client_websocket(client_id, websocket)
         handle: AgentSessionHandle | None = None
         try:
             capabilities = await websocket.receive_json()
@@ -823,6 +962,7 @@ def create_app(
         finally:
             if handle is not None:
                 await services.agent_gateway.disconnect(handle)
+            services.unregister_client_websocket(client_id, websocket)
 
     @app.websocket("/ws/v1/chat")
     async def chat(websocket: WebSocket) -> None:
@@ -832,6 +972,7 @@ def create_app(
             await websocket.close(4401, "인증이 필요합니다.")
             return
         await websocket.accept()
+        services.register_client_websocket(client_id, websocket)
         tasks: dict[str, asyncio.Task[None]] = {}
         seen_request_ids: set[str] = set()
 
@@ -1726,5 +1867,7 @@ def create_app(
                 task.cancel()
             if pending_tasks:
                 await asyncio.gather(*pending_tasks, return_exceptions=True)
+        finally:
+            services.unregister_client_websocket(client_id, websocket)
 
     return app

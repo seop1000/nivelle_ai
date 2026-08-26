@@ -458,6 +458,7 @@ def core_command(
     gateway_bind: str | None = None,
     gateway_advertised_host: str | None = None,
     network_diagnostics: bool = False,
+    ui: bool = False,
 ) -> list[str]:
     """Build the Core command shared by server and diagnostics launch paths."""
     command = [str(project_python()), "-m", "nivelle_core.main"]
@@ -469,6 +470,8 @@ def core_command(
         command.extend(["--gateway-advertised-host", gateway_advertised_host])
     if network_diagnostics:
         command.append("--network-diagnostics")
+    if ui:
+        command.append("--ui")
     return command
 
 
@@ -483,6 +486,7 @@ def start_server(
         provider_endpoint=provider_endpoint,
         gateway_bind=gateway_bind,
         gateway_advertised_host=gateway_advertised_host,
+        ui=True,
     )
     return subprocess.Popen(
         command,
@@ -586,6 +590,7 @@ def main() -> int:
                     provider_endpoint=provider_endpoint,
                     gateway_bind=gateway_bind,
                     gateway_advertised_host=gateway_advertised_host,
+                    ui=True,
                 ),
                 cwd=ROOT,
             )

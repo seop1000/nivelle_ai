@@ -4,8 +4,10 @@ import random
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from time import perf_counter
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
@@ -441,6 +443,49 @@ class NetworkClient:
 
     async def delete(self, path: str) -> Any:
         return await self.request("DELETE", path)
+
+    async def upload_audio_file(
+        self,
+        path: Path,
+        *,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> Any:
+        """Stream one local audio file to Core without buffering it in the UI process."""
+
+        if self._shutdown_started:
+            raise RuntimeError("network client is shut down")
+        size_bytes = path.stat().st_size
+        if size_bytes < 1:
+            raise ValueError("empty audio files cannot be uploaded")
+        if size_bytes > 256 * 1024 * 1024:
+            raise ValueError("audio files must not exceed 256 MiB")
+
+        async def chunks() -> AsyncIterator[bytes]:
+            sent = 0
+            with path.open("rb") as stream:
+                while True:
+                    chunk = await asyncio.to_thread(stream.read, 1024 * 1024)
+                    if not chunk:
+                        break
+                    sent += len(chunk)
+                    if progress is not None:
+                        progress(sent, size_bytes)
+                    yield chunk
+
+        headers = self.headers | {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(size_bytes),
+            "X-Nivelle-Filename": quote(path.name, safe=""),
+        }
+        timeout = httpx.Timeout(300.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                self.connections.base_url() + "/api/v1/audio-analysis/jobs",
+                headers=headers,
+                content=chunks(),
+            )
+            response.raise_for_status()
+            return response.json()
 
     async def pair(self, code: str, name: str) -> str:
         async with httpx.AsyncClient(timeout=10) as client:

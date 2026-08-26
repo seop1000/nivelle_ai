@@ -2,6 +2,7 @@ import asyncio
 import math
 import os
 import sys
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -79,6 +80,8 @@ class NivelleLinkApplication:
         self._conversation_titles: dict[str, str] = {}
         self._admin_console_connected = False
         self._admin_tasks: set[asyncio.Task[None]] = set()
+        self._audio_job_id: str | None = None
+        self._audio_generation = 0
         self._memory_window_connected = False
         self._memory_tasks: set[asyncio.Task[None]] = set()
         self._history_window_connected = False
@@ -730,6 +733,10 @@ class NivelleLinkApplication:
             console.save_requested.connect(self._schedule_admin_save)
             console.rollback_requested.connect(self._schedule_admin_rollback)
             console.pairing_code_requested.connect(self._schedule_pairing_code)
+            console.audio_page.file_selected.connect(self._schedule_audio_analysis)
+            console.audio_page.cancellation_requested.connect(
+                self._schedule_audio_cancellation
+            )
             self._admin_console_connected = True
         self._schedule_admin_refresh()
 
@@ -815,6 +822,108 @@ class NivelleLinkApplication:
 
     def _schedule_pairing_code(self) -> None:
         self._start_admin_task(self._create_pairing_code())
+
+    def _schedule_audio_analysis(self, path: str) -> None:
+        self._audio_generation += 1
+        self._start_admin_task(self._analyze_audio(Path(path), self._audio_generation))
+
+    def _schedule_audio_cancellation(self) -> None:
+        if self._audio_job_id is not None:
+            self._start_admin_task(self._cancel_audio_analysis(self._audio_job_id))
+
+    async def _cancel_audio_analysis(self, job_id: str) -> None:
+        console = self.window.console
+        if console is None:
+            return
+        try:
+            value = await self.client.delete(f"/api/v1/audio-analysis/jobs/{job_id}")
+            if isinstance(value, dict):
+                console.audio_page.set_job_progress(
+                    str(value.get("status") or "cancelling"),
+                    float(value.get("progress") or 0.0),
+                    str(value.get("stage") or "cancelling"),
+                )
+        except httpx.HTTPStatusError as exc:
+            console.audio_page.set_error(self._admin_http_error(exc))
+        except (httpx.HTTPError, OSError, TypeError, ValueError) as exc:
+            console.audio_page.set_error(f"오디오 분석을 취소하지 못했습니다: {exc}")
+
+    async def _analyze_audio(self, path: Path, generation: int) -> None:
+        console = self.window.console
+        if console is None:
+            return
+        page = console.audio_page
+        if not self.connections.active or not self.client.token:
+            page.set_error("오디오 분석에는 Core 연결과 관리자 인증이 필요합니다.")
+            return
+        try:
+            if not path.is_file():
+                raise ValueError("선택한 오디오 파일을 찾을 수 없습니다.")
+            previous_job = self._audio_job_id
+            if previous_job is not None:
+                try:
+                    await self.client.delete(
+                        f"/api/v1/audio-analysis/jobs/{previous_job}"
+                    )
+                except httpx.HTTPError:
+                    pass
+            created = await self.client.upload_audio_file(
+                path, progress=page.set_upload_progress
+            )
+            if not isinstance(created, dict):
+                raise TypeError("Core가 올바르지 않은 오디오 분석 응답을 반환했습니다.")
+            job_id = str(created.get("job_id") or "")
+            if not job_id:
+                raise TypeError("Core 오디오 분석 응답에 작업 ID가 없습니다.")
+            self._audio_job_id = job_id
+            value = created
+            while True:
+                if generation != self._audio_generation:
+                    try:
+                        await self.client.delete(
+                            f"/api/v1/audio-analysis/jobs/{job_id}"
+                        )
+                    except httpx.HTTPError:
+                        pass
+                    return
+                status_value = str(value.get("status") or "failed")
+                progress_value = float(value.get("progress") or 0.0)
+                stage = str(value.get("stage") or status_value)
+                page.set_job_progress(status_value, progress_value, stage)
+                if status_value == "completed":
+                    result = value.get("result")
+                    if not isinstance(result, dict):
+                        raise TypeError("완료된 오디오 분석 결과가 올바르지 않습니다.")
+                    page.set_analysis_result(
+                        result, cache_hit=bool(value.get("cache_hit"))
+                    )
+                    return
+                if status_value in {"failed", "cancelled"}:
+                    error = value.get("error")
+                    message = (
+                        str(error.get("message"))
+                        if isinstance(error, dict) and error.get("message")
+                        else "오디오 분석이 취소되었습니다."
+                        if status_value == "cancelled"
+                        else "Core에서 오디오 분석에 실패했습니다."
+                    )
+                    if status_value == "failed":
+                        page.set_error(message)
+                    return
+                await asyncio.sleep(0.2)
+                refreshed = await self.client.get(
+                    f"/api/v1/audio-analysis/jobs/{job_id}"
+                )
+                if not isinstance(refreshed, dict):
+                    raise TypeError("Core가 올바르지 않은 오디오 분석 상태를 반환했습니다.")
+                value = refreshed
+        except httpx.HTTPStatusError as exc:
+            page.set_error(self._admin_http_error(exc))
+        except (httpx.HTTPError, OSError, TypeError, ValueError) as exc:
+            page.set_error(f"오디오 파일을 분석하지 못했습니다: {exc}")
+        finally:
+            if generation == self._audio_generation:
+                self._audio_job_id = None
 
     def _schedule_connection_settings(self) -> None:
         if self._send_task is not None and not self._send_task.done():

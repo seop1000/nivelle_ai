@@ -5,7 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from nivelle_protocol.tools import OpenApplicationArguments
 
 from .errors import AgentError
 from .idempotency import IdempotencyCache
@@ -15,12 +15,6 @@ from .models import (
     is_forbidden_application_executable,
 )
 from .path_security import _validate_raw_windows_path, is_reparse_point
-
-
-class OpenApplicationArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    application_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
 
 
 def default_application_launcher(executable: Path) -> int | None:

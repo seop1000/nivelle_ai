@@ -237,6 +237,8 @@ def _validate_json_size(value: object, *, maximum: int, label: str) -> object:
 
 def _clean_summary(value: str) -> str:
     value = value.strip()
+    if not value:
+        raise ValueError("text must contain a non-whitespace character")
     return _reject_unsafe_controls(value)
 
 

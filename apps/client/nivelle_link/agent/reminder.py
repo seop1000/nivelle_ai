@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from nivelle_protocol.tools import SetReminderArguments
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .errors import AgentError
@@ -20,7 +21,7 @@ REMINDER_SCHEMA_VERSION = 1
 BUSINESS_RECONCILIATION_RETENTION = timedelta(days=7)
 
 
-class SetReminderArguments(BaseModel):
+class ReminderInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1, max_length=200)
@@ -110,13 +111,17 @@ class ReminderStore:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _fingerprint(arguments: SetReminderArguments, conversation_id: str) -> str:
+    def _fingerprint(
+        arguments: SetReminderArguments | ReminderInput, conversation_id: str
+    ) -> str:
         payload = arguments.model_dump(mode="json") | {"conversation_id": conversation_id}
         return hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
 
-    def _parse_schedule(self, arguments: SetReminderArguments) -> tuple[datetime, datetime]:
+    def _parse_schedule(
+        self, arguments: SetReminderArguments | ReminderInput
+    ) -> tuple[datetime, datetime]:
         zone: tzinfo
         if arguments.timezone == "Asia/Seoul":
             zone = timezone(timedelta(hours=9), name="Asia/Seoul")
@@ -127,10 +132,13 @@ class ReminderStore:
                 zone = ZoneInfo(arguments.timezone)
             except ZoneInfoNotFoundError as exc:
                 raise AgentError("validation_failed", "The reminder timezone is invalid.") from exc
-        try:
-            parsed = datetime.fromisoformat(arguments.scheduled_at.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise AgentError("validation_failed", "The reminder time is invalid.") from exc
+        if isinstance(arguments.scheduled_at, datetime):
+            parsed = arguments.scheduled_at
+        else:
+            try:
+                parsed = datetime.fromisoformat(arguments.scheduled_at)
+            except ValueError as exc:
+                raise AgentError("validation_failed", "The reminder time is invalid.") from exc
         if parsed.tzinfo is None:
             local = parsed.replace(tzinfo=zone)
             round_trip = local.astimezone(UTC).astimezone(zone).replace(tzinfo=None)
@@ -308,7 +316,7 @@ class ReminderStore:
         scheduled_at: str,
         timezone: str,
     ) -> bool:
-        arguments = SetReminderArguments(
+        arguments = ReminderInput(
             title=title,
             reminder_text=reminder_text,
             scheduled_at=scheduled_at,

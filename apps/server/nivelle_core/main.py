@@ -30,6 +30,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print Gateway bind/address selection details and exit",
     )
+    parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="Open the local Core identity and authentication administration UI",
+    )
     return parser.parse_args(argv)
 
 
@@ -83,6 +88,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     resolved = app.state.services.config.resolved_sources.get("provider_endpoint")
     if resolved is not None:
         print(resolved.diagnostic())
+    if args.ui:
+        from .admin_ui import run_core_admin_ui
+
+        return run_core_admin_ui(
+            app,
+            host=network.bind_host,
+            port=network.port,
+            log_level=settings.log_level.lower(),
+        )
     uvicorn.run(
         app,
         host=network.bind_host,

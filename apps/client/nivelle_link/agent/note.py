@@ -6,9 +6,9 @@ import tempfile
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from nivelle_protocol.tools import CreateNoteArguments
 
 from .errors import AgentError
 from .idempotency import IdempotencyCache
@@ -24,28 +24,6 @@ _RESERVED = {
     *(f"COM{number}" for number in range(1, 10)),
     *(f"LPT{number}" for number in range(1, 10)),
 }
-
-
-class CreateNoteArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    title: str = Field(min_length=1, max_length=200)
-    content: str = Field(max_length=1_000_000)
-    format: Literal["txt", "md"] = "txt"
-
-    @field_validator("title")
-    @classmethod
-    def reject_blank_title(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("Note title cannot be blank")
-        return value
-
-    @field_validator("content")
-    @classmethod
-    def reject_nul_content(cls, value: str) -> str:
-        if "\x00" in value:
-            raise ValueError("Note content cannot contain NUL")
-        return value
 
 
 def sanitize_note_filename(title: str) -> str:

@@ -142,6 +142,7 @@ def test_admin_can_issue_pairing_code_for_second_client(tmp_path: Path) -> None:
         }
         assert client.get("/api/v1/status", headers=first_headers).status_code == 200
         assert client.get("/api/v1/status", headers=second_headers).status_code == 200
+        assert client.post("/api/v1/pairing/code", headers=second_headers).status_code == 403
         assert client.get("/api/v1/pairing/status").json()["pairing_available"] is False
 
 

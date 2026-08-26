@@ -650,6 +650,21 @@ class AgentGateway:
         async with self._lifecycle_lock:
             return await self._disconnect_without_lifecycle(handle)
 
+    async def disconnect_client(self, client_id: str) -> int:
+        """Expire every Agent session owned by one revoked client."""
+
+        async with self._lifecycle_lock:
+            async with self._state_lock:
+                handles = [
+                    state.handle
+                    for (candidate_client_id, _), state in self._sessions.items()
+                    if candidate_client_id == client_id
+                ]
+            transitioned = 0
+            for handle in handles:
+                transitioned += await self._disconnect_without_lifecycle(handle)
+            return transitioned
+
     async def snapshot(self) -> AgentGatewaySnapshot:
         """Return metadata-only live state; arguments and results are omitted."""
 

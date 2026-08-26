@@ -41,11 +41,12 @@ class PairingService:
         # Consume before the first await so concurrent requests cannot both
         # redeem one code. A database error requires issuing a fresh code.
         self.code, self.expires_at = None, None
+        is_initial_admin = await self.pairing_required()
         token, salt, client_id = secrets.token_urlsafe(48), secrets.token_hex(16), str(uuid4())
         digest = self._hash(token, salt)
         await self.db.execute(
-            "INSERT INTO clients VALUES(?,?,?,?,?,NULL,NULL,1)",
-            (client_id, name, digest, salt, now()),
+            "INSERT INTO clients VALUES(?,?,?,?,?,NULL,NULL,?)",
+            (client_id, name, digest, salt, now(), 1 if is_initial_admin else 0),
         )
         return client_id, token
 

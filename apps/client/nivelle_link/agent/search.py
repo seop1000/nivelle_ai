@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from nivelle_protocol.tools import SearchFilesArguments
 
 from .errors import AgentError
 from .models import AgentPolicy
@@ -38,28 +38,6 @@ def _check_search_budget(
         raise AgentError("cancelled", "The filename search was cancelled.")
     if monotonic() - started > timeout_seconds:
         raise AgentError("timed_out", "The filename search timed out.")
-
-
-class SearchFilesArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    query: str = Field(min_length=1, max_length=200)
-    root_id: str = Field(min_length=1, max_length=100)
-    extensions: list[str] = Field(default_factory=list, max_length=20)
-    include_directories: bool = False
-    max_results: int = Field(default=50, ge=1, le=200)
-    max_depth: int = Field(default=8, ge=0, le=8)
-
-    @field_validator("extensions")
-    @classmethod
-    def validate_extensions(cls, value: list[str]) -> list[str]:
-        normalized: list[str] = []
-        for extension in value:
-            candidate = extension.casefold().lstrip(".")
-            if not candidate or not candidate.isalnum() or len(candidate) > 16:
-                raise ValueError("Extensions must be simple filename extensions")
-            normalized.append(f".{candidate}")
-        return sorted(set(normalized))
 
 
 def search_files(
@@ -145,7 +123,8 @@ def search_files(
 
                     suffix_allowed = (
                         not arguments.extensions
-                        or validated.path.suffix.casefold() in arguments.extensions
+                        or validated.path.suffix.casefold().removeprefix(".")
+                        in arguments.extensions
                     )
                     type_allowed = is_file or (is_directory and arguments.include_directories)
                     if (

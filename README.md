@@ -37,9 +37,9 @@ WinGet으로 사용자 범위에 설치하고, WinGet을 사용할 수 없으면
 .\.venv\Scripts\python.exe .\nivelle.py
 ```
 
-두 PC를 사용할 때는 Core 터미널에 표시된 6자리 페어링 코드를 Link에 입력합니다.
-코드는 10분 동안만 유효합니다. Link에서 서버 PC의 사설 LAN 주소와 Gateway 포트를
-등록한 뒤 연결하십시오.
+두 PC를 사용할 때는 Core의 `로컬 보안 관리` 창에 표시된 6자리 페어링 코드를 Link에
+입력합니다. 코드는 10분 동안만 유효합니다. Link에서 서버 PC의 사설 LAN 주소와
+Gateway 포트를 등록한 뒤 연결하십시오.
 
 ```powershell
 .\scripts\run_client.ps1
@@ -66,10 +66,26 @@ SQLite 데이터베이스에 저장되며, 이전 대화를 불러와 문맥을 
 
 ## Core와 모델 관리
 
-Core 관리 화면에서는 Gateway와 `llama-server`의 실제 상태, 시스템 사용량, 모델 및
-추론 설정을 확인할 수 있습니다. 온도, top-p, top-k, 반복 패널티, 최대 출력 토큰과
-seed는 다음 추론부터 적용됩니다. 포트, 컨텍스트 크기, GPU 레이어, 스레드, 배치,
+`Nivelle-Core.exe`, `Nivelle-Core.cmd` 또는 `scripts/run_server.ps1`로 Core를 시작하면
+서버 PC에 별도의 `로컬 보안 관리` 창이 열립니다. 이 창에서 변경되지 않는 서버 ID와
+실제 Gateway 주소, 일회용 페어링 코드, 인증된 Link 목록을 확인할 수 있습니다. 일반
+클라이언트에 관리자 권한을 부여하거나 해제할 수 있고, 인증을 해제하면 저장된 토큰과
+현재 WebSocket 연결이 함께 무효화됩니다. 마지막 활성 관리자의 권한과 인증은 실수로
+해제할 수 없도록 보호됩니다. 최초로 페어링한 Link만 관리자이며 이후 Link는 일반
+권한으로 등록되므로 필요한 장치만 이 로컬 UI에서 승격하십시오. 이 관리 기능은 원격
+무인증 API를 만들지 않고 Core 프로세스 내부에서만 실행되며 원본 토큰도 표시하지
+않습니다.
+
+Link 메뉴의 Core 관리 화면에서는 Gateway와 `llama-server`의 실제 상태, 시스템 사용량,
+모델 및 추론 설정을 확인할 수 있습니다. 온도, top-p, top-k, 반복 패널티, 최대 출력
+토큰과 seed는 다음 추론부터 적용됩니다. 포트, 컨텍스트 크기, GPU 레이어, 스레드, 배치,
 모델 경로 변경은 `pending_restart`로 표시되며 관련 프로세스를 재시작한 뒤 적용됩니다.
+
+Link 쪽 관리 화면의 `오디오 분석`에서 WAV 또는 Core의 FFmpeg가 디코딩할 수 있는
+파일을 선택하면 채널별 waveform, spectrogram, 기본 음향 metric을 확인하고
+재생·seek·zoom할 수 있습니다. Core의 로컬 보안 관리 UI에는 오디오 기능이 없습니다.
+분석은 Core worker에서 실행되고 파일 내용 hash로 캐시됩니다. 포맷과 한계는
+[Core Audio Analysis](docs/AUDIO_ANALYSIS.md)를 참고하십시오.
 
 `models.yaml`에서 `external_url`을 지정하면 Core는 로컬 llama 프로세스를 시작하지
 않습니다. 로컬 `llama-server`는 반드시 loopback에만 바인딩하고, Gateway도 공용

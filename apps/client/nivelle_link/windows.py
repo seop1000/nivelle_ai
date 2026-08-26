@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .audio_widgets import AudioAnalysisPage
 from .storage import is_loopback_connection_host, validate_connection_host
 
 
@@ -81,7 +82,9 @@ class ServerConsoleWindow(QMainWindow):
         root = QWidget()
         layout = QHBoxLayout(root)
         self.sections = QListWidget()
-        self.sections.addItems(["개요", "서버", "모델", "추론", "변경 이력", "Agent"])
+        self.sections.addItems(
+            ["개요", "서버", "모델", "추론", "변경 이력", "오디오 분석", "Agent"]
+        )
         self.sections.setMaximumWidth(180)
 
         right = QWidget()
@@ -106,6 +109,8 @@ class ServerConsoleWindow(QMainWindow):
         self.pages.addWidget(self._build_models_page())
         self.pages.addWidget(self._build_inference_page())
         self.pages.addWidget(self._build_revisions_page())
+        self.audio_page = AudioAnalysisPage()
+        self.pages.addWidget(self.audio_page)
         self.pages.addWidget(self._build_agent_status_page())
         right_layout.addWidget(self.pages)
 
@@ -734,6 +739,7 @@ class ServerConsoleWindow(QMainWindow):
 
         was_online = self._online
         self._online = online
+        self.audio_page.set_online(online)
         self._update_control_state()
         if not online:
             self.message.setStyleSheet("color: #8a5a00;")

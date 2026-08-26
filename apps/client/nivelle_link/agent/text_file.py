@@ -5,29 +5,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from nivelle_protocol.tools import ReadTextFileArguments
 
 from .errors import AgentError, PathValidationError
 from .models import AgentPolicy
 from .path_security import PathIdentity, WindowsPathValidator, sanitize_display_text
 from .result_utils import untrusted_result
 from .search import CancellationSignal
-
-
-class ReadTextFileArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    path_ref: str | None = None
-    path: str | None = None
-    start_line: int = Field(default=1, ge=1)
-    max_lines: int = Field(default=500, ge=1, le=5_000)
-    max_characters: int = Field(default=32_000, ge=1, le=100_000)
-
-    @model_validator(mode="after")
-    def require_one_target(self) -> ReadTextFileArguments:
-        if (self.path_ref is None) == (self.path is None):
-            raise ValueError("Exactly one of path_ref or path is required")
-        return self
 
 
 def _looks_binary(payload: bytes) -> bool:

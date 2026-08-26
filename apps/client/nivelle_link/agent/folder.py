@@ -5,25 +5,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from nivelle_protocol.tools import OpenFolderArguments
 
 from .errors import AgentError
 from .models import AgentPolicy
 from .path_security import WindowsPathValidator
 from .result_utils import untrusted_result
-
-
-class OpenFolderArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    path_ref: str | None = None
-    path: str | None = None
-
-    @model_validator(mode="after")
-    def require_one_target(self) -> OpenFolderArguments:
-        if (self.path_ref is None) == (self.path is None):
-            raise ValueError("Exactly one of path_ref or path is required")
-        return self
 
 
 def default_folder_launcher(path: Path) -> None:
