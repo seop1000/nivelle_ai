@@ -22,9 +22,14 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 Windows x64 포터블 배포본은 서버 PC에서 `Nivelle-Core.exe`, 클라이언트 PC에서
-`Nivelle-Link.exe`를 각각 실행합니다. 한 PC에서 통합 시험할 때만
-`Nivelle-Local.exe`를 사용합니다. 같은 역할의 `Nivelle-Core.cmd`,
+`Nivelle-Link.exe`를 각각 실행합니다. 한 PC에서 Core와 Link를 함께 사용하는 1PC
+구성은 `Nivelle-Local.exe`를 실행합니다. 같은 역할의 `Nivelle-Core.cmd`,
 `Nivelle-Link.cmd`, `Nivelle-Local.cmd`도 제공됩니다.
+
+`Nivelle-Local`은 현재 Core 포트의 loopback 주소를 Link에 직접 전달하고 로컬 전용
+페어링 경로로 자동 인증합니다. 따라서 처음 실행할 때 서버 주소나 6자리 코드를 별도로
+입력할 필요가 없습니다. 자동 페어링은 `127.0.0.1`, `localhost`, `::1`에만 허용되며,
+일반 `Nivelle-Link`의 LAN 연결과 수동 페어링 동작은 그대로 유지됩니다.
 
 실행기는 시작할 때 Python 3.12 이상과 `.venv`를 실제로 검사합니다. Python이 없으면
 WinGet으로 사용자 범위에 설치하고, WinGet을 사용할 수 없으면 python.org가 서명한
@@ -81,11 +86,11 @@ Link 메뉴의 Core 관리 화면에서는 Gateway와 `llama-server`의 실제 �
 토큰과 seed는 다음 추론부터 적용됩니다. 포트, 컨텍스트 크기, GPU 레이어, 스레드, 배치,
 모델 경로 변경은 `pending_restart`로 표시되며 관련 프로세스를 재시작한 뒤 적용됩니다.
 
-Link 쪽 관리 화면의 `오디오 분석`에서 WAV 또는 Core의 FFmpeg가 디코딩할 수 있는
-파일을 선택하면 채널별 waveform, spectrogram, 기본 음향 metric을 확인하고
-재생·seek·zoom할 수 있습니다. Core의 로컬 보안 관리 UI에는 오디오 기능이 없습니다.
-분석은 Core worker에서 실행되고 파일 내용 hash로 캐시됩니다. 포맷과 한계는
-[Core Audio Analysis](docs/AUDIO_ANALYSIS.md)를 참고하십시오.
+Link의 `≡` 메뉴에서 독립된 `오디오 분석` 창을 열어 WAV 또는 Core의 FFmpeg가
+디코딩할 수 있는 파일을 선택하면 채널별 waveform, spectrogram, 기본 음향 metric을
+확인하고 재생·seek·zoom할 수 있습니다. Core 관리 화면과 Core의 로컬 보안 관리 UI에는
+오디오 기능이 없습니다. 분석은 Core worker에서 실행되고 파일 내용 hash로 캐시됩니다.
+포맷과 한계는 [Core Audio Analysis](docs/AUDIO_ANALYSIS.md)를 참고하십시오.
 
 `models.yaml`에서 `external_url`을 지정하면 Core는 로컬 llama 프로세스를 시작하지
 않습니다. 로컬 `llama-server`는 반드시 loopback에만 바인딩하고, Gateway도 공용

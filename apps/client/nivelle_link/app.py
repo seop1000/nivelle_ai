@@ -1,6 +1,7 @@
 import asyncio
 import math
 import os
+import platform
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from .network import (
 )
 from .storage import (
     client_data_dir,
+    is_loopback_connection_host,
     load_connection_profiles,
     load_token_for_profile,
     load_token_for_server,
@@ -46,8 +48,14 @@ AUTHENTICATION_FAILURES_BEFORE_PAIRING = 2
 
 
 class NivelleLinkApplication:
-    def __init__(self, *, gateway_endpoint: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        gateway_endpoint: str | None = None,
+        local_mode: bool = False,
+    ) -> None:
         self.qt = QApplication.instance() or QApplication(sys.argv)
+        self.local_mode = local_mode
         if gateway_endpoint or os.environ.get("NIVELLE_GATEWAY_ENDPOINT"):
             profiles, resolved_gateway = resolve_connection_profiles(
                 cli_endpoint=gateway_endpoint
@@ -69,6 +77,7 @@ class NivelleLinkApplication:
         self.window.history_requested.connect(self._history_opened)
         self.window.persona_requested.connect(self._persona_opened)
         self.window.agent_requested.connect(self._agent_opened)
+        self.window.audio_requested.connect(self._audio_opened)
         self.window.tool_decision_requested.connect(self._schedule_tool_decision)
         self.window.new_conversation_requested.connect(self._new_conversation)
         self._startup_task: asyncio.Task[None] | None = None
@@ -82,6 +91,8 @@ class NivelleLinkApplication:
         self._admin_tasks: set[asyncio.Task[None]] = set()
         self._audio_job_id: str | None = None
         self._audio_generation = 0
+        self._audio_window_connected = False
+        self._audio_tasks: set[asyncio.Task[None]] = set()
         self._memory_window_connected = False
         self._memory_tasks: set[asyncio.Task[None]] = set()
         self._history_window_connected = False
@@ -133,6 +144,7 @@ class NivelleLinkApplication:
             if task is not None
         }
         tasks.update(self._admin_tasks)
+        tasks.update(self._audio_tasks)
         tasks.update(self._memory_tasks)
         tasks.update(self._history_tasks)
         tasks.update(self._persona_tasks)
@@ -733,12 +745,34 @@ class NivelleLinkApplication:
             console.save_requested.connect(self._schedule_admin_save)
             console.rollback_requested.connect(self._schedule_admin_rollback)
             console.pairing_code_requested.connect(self._schedule_pairing_code)
-            console.audio_page.file_selected.connect(self._schedule_audio_analysis)
-            console.audio_page.cancellation_requested.connect(
-                self._schedule_audio_cancellation
-            )
             self._admin_console_connected = True
         self._schedule_admin_refresh()
+
+    def _audio_opened(self) -> None:
+        window = self.window.audio_window
+        if window is None:
+            return
+        window.set_online(self.connections.active is not None and bool(self.client.token))
+        if not self._audio_window_connected:
+            window.page.file_selected.connect(self._schedule_audio_analysis)
+            window.page.cancellation_requested.connect(
+                self._schedule_audio_cancellation
+            )
+            self._audio_window_connected = True
+
+    def _start_audio_task(self, coroutine: Any) -> None:
+        task = asyncio.create_task(coroutine)
+        self._audio_tasks.add(task)
+        task.add_done_callback(self._audio_task_finished)
+
+    def _audio_task_finished(self, task: asyncio.Task[None]) -> None:
+        self._audio_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        window = self.window.audio_window
+        if error and window is not None:
+            window.page.set_error(f"오디오 분석 작업 중 오류가 발생했습니다: {error}")
 
     def _start_admin_task(self, coroutine: Any) -> None:
         task = asyncio.create_task(coroutine)
@@ -825,34 +859,35 @@ class NivelleLinkApplication:
 
     def _schedule_audio_analysis(self, path: str) -> None:
         self._audio_generation += 1
-        self._start_admin_task(self._analyze_audio(Path(path), self._audio_generation))
+        self._start_audio_task(self._analyze_audio(Path(path), self._audio_generation))
 
     def _schedule_audio_cancellation(self) -> None:
         if self._audio_job_id is not None:
-            self._start_admin_task(self._cancel_audio_analysis(self._audio_job_id))
+            self._start_audio_task(self._cancel_audio_analysis(self._audio_job_id))
 
     async def _cancel_audio_analysis(self, job_id: str) -> None:
-        console = self.window.console
-        if console is None:
+        window = self.window.audio_window
+        if window is None:
             return
+        page = window.page
         try:
             value = await self.client.delete(f"/api/v1/audio-analysis/jobs/{job_id}")
             if isinstance(value, dict):
-                console.audio_page.set_job_progress(
+                page.set_job_progress(
                     str(value.get("status") or "cancelling"),
                     float(value.get("progress") or 0.0),
                     str(value.get("stage") or "cancelling"),
                 )
         except httpx.HTTPStatusError as exc:
-            console.audio_page.set_error(self._admin_http_error(exc))
+            page.set_error(self._admin_http_error(exc))
         except (httpx.HTTPError, OSError, TypeError, ValueError) as exc:
-            console.audio_page.set_error(f"오디오 분석을 취소하지 못했습니다: {exc}")
+            page.set_error(f"오디오 분석을 취소하지 못했습니다: {exc}")
 
     async def _analyze_audio(self, path: Path, generation: int) -> None:
-        console = self.window.console
-        if console is None:
+        window = self.window.audio_window
+        if window is None:
             return
-        page = console.audio_page
+        page = window.page
         if not self.connections.active or not self.client.token:
             page.set_error("오디오 분석에는 Core 연결과 관리자 인증이 필요합니다.")
             return
@@ -1370,7 +1405,19 @@ class NivelleLinkApplication:
             return
 
         try:
-            status = await self.client.get("/api/v1/status")
+            try:
+                status = await self.client.get("/api/v1/status")
+            except httpx.HTTPStatusError as exc:
+                if (
+                    not self.local_mode
+                    or exc.response.status_code not in {401, 403}
+                    or not is_loopback_connection_host(profile.host)
+                ):
+                    raise
+                self.client.token = None
+                if not await self._pair_if_required(profile):
+                    raise
+                status = await self.client.get("/api/v1/status")
             if not isinstance(status, dict):
                 raise TypeError("서버가 올바르지 않은 상태 응답을 반환했습니다.")
             profile = self._bind_authenticated_server(profile, status)
@@ -2019,6 +2066,28 @@ class NivelleLinkApplication:
                     raise TypeError("서버가 올바르지 않은 페어링 상태를 반환했습니다.")
                 required = bool(pairing_status.get("pairing_required"))
                 available = bool(pairing_status.get("pairing_available"))
+                if self.local_mode:
+                    if not is_loopback_connection_host(profile.host):
+                        self.window.show_error(
+                            "1PC 로컬 모드는 127.0.0.1/localhost Core에만 연결할 수 있습니다."
+                        )
+                        return False
+                    local_code_response = await http.get(
+                        self.connections.base_url() + "/api/v1/pairing/local-code"
+                    )
+                    local_code_response.raise_for_status()
+                    local_code = local_code_response.json()
+                    if not isinstance(local_code, dict) or not local_code.get("code"):
+                        raise TypeError("Core가 로컬 페어링 코드를 반환하지 않았습니다.")
+                    device_name = f"{platform.node() or 'Local PC'} · Nivelle Local"[:100]
+                    token = await self.client.pair(
+                        str(local_code["code"]), device_name
+                    )
+                    save_token_for_profile(profile, token)
+                    self.window.status.setText(
+                        f"로컬 연결됨: {profile.host}:{profile.port} · 자동 페어링 완료"
+                    )
+                    return True
             if not required and not available:
                 self.window.show_error(
                     "이 서버에 저장된 인증 정보가 없습니다. 서버 관리자에게 새 페어링을 요청하세요."
@@ -2326,8 +2395,15 @@ class NivelleLinkApplication:
                 )
 
 
-def run(*, gateway_endpoint: str | None = None) -> None:
-    app = NivelleLinkApplication(gateway_endpoint=gateway_endpoint)
+def run(
+    *,
+    gateway_endpoint: str | None = None,
+    local_mode: bool = False,
+) -> None:
+    app = NivelleLinkApplication(
+        gateway_endpoint=gateway_endpoint,
+        local_mode=local_mode,
+    )
     loop = qasync.QEventLoop(app.qt)
     asyncio.set_event_loop(loop)
     with loop:

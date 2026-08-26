@@ -5,8 +5,9 @@ import math
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QUrl, Signal
+from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, QUrl, Signal
 from PySide6.QtGui import (
+    QCloseEvent,
     QColor,
     QDragEnterEvent,
     QDropEvent,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMainWindow,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -33,6 +35,31 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+class AudioAnalysisWindow(QMainWindow):
+    """Standalone Link window for Core-backed audio analysis."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Nivelle Link · 오디오 분석")
+        self.resize(1120, 820)
+        self.page = AudioAnalysisPage()
+        self.setCentralWidget(self.page)
+        geometry = QSettings("Nivelle", "NivelleLink").value(
+            "audio_analysis/geometry"
+        )
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+
+    def set_online(self, online: bool) -> None:
+        self.page.set_online(online)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        QSettings("Nivelle", "NivelleLink").setValue(
+            "audio_analysis/geometry", self.saveGeometry()
+        )
+        super().closeEvent(event)
 
 
 def _format_time(seconds: float) -> str:

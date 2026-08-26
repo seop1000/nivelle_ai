@@ -1,8 +1,9 @@
 from pathlib import Path
 from typing import Any
 
-from nivelle_link.audio_widgets import AudioAnalysisPage
-from nivelle_link.windows import ServerConsoleWindow
+from nivelle_link import app as client_app
+from nivelle_link.audio_widgets import AudioAnalysisPage, AudioAnalysisWindow
+from nivelle_link.windows import MainChatWindow, ServerConsoleWindow
 
 RESULT = {
     "metadata": {
@@ -48,21 +49,33 @@ RESULT = {
 }
 
 
-def test_server_console_exposes_audio_analysis_page(qtbot: Any) -> None:
-    window = ServerConsoleWindow()
-    qtbot.addWidget(window)
+def test_audio_analysis_is_a_standalone_menu_window(qtbot: Any) -> None:
+    main = MainChatWindow()
+    console = ServerConsoleWindow()
+    qtbot.addWidget(main)
+    qtbot.addWidget(console)
 
-    assert [window.sections.item(index).text() for index in range(window.sections.count())][5] == "오디오 분석"
-    assert isinstance(window.audio_page, AudioAnalysisPage)
-    window.audio_page.set_analysis_result(RESULT, cache_hit=True)
-    assert window.audio_page.channel_select.count() == 3
-    assert window.audio_page.position_slider.maximum() == 2_000
-    assert "Spectral centroid" in window.audio_page.metrics.toPlainText()
-    assert "캐시 사용" in window.audio_page.status.text()
-    window.audio_page._position_changed(1_500)
-    assert window.audio_page.live_rms.text() == "0.200000"
-    window.audio_page.frequency_scale.setCurrentIndex(1)
-    assert not window.audio_page.spectrogram.grab().isNull()
+    sections = [
+        console.sections.item(index).text()
+        for index in range(console.sections.count())
+    ]
+    assert "오디오 분석" not in sections
+    assert main.audio_action.text() == "오디오 분석"
+
+    with qtbot.waitSignal(main.audio_requested):
+        main.audio_action.trigger()
+    assert isinstance(main.audio_window, AudioAnalysisWindow)
+    assert main.audio_window.isVisible()
+    page = main.audio_window.page
+    page.set_analysis_result(RESULT, cache_hit=True)
+    assert page.channel_select.count() == 3
+    assert page.position_slider.maximum() == 2_000
+    assert "Spectral centroid" in page.metrics.toPlainText()
+    assert "캐시 사용" in page.status.text()
+    page._position_changed(1_500)
+    assert page.live_rms.text() == "0.200000"
+    page.frequency_scale.setCurrentIndex(1)
+    assert not page.spectrogram.grab().isNull()
 
 
 def test_audio_page_emits_unicode_selected_path(
@@ -77,3 +90,23 @@ def test_audio_page_emits_unicode_selected_path(
 
     assert signal.args == [str(path)]
     assert str(path) in page.file_label.text()
+
+
+def test_application_connects_standalone_audio_window_once(
+    qtbot: Any, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [])
+    application = client_app.NivelleLinkApplication()
+    qtbot.addWidget(application.window)
+    selected: list[str] = []
+    application._schedule_audio_analysis = selected.append
+
+    application.window.audio_action.trigger()
+    assert application.window.console is None
+    assert application.window.audio_window is not None
+    application.window.audio_window.page.file_selected.emit("D:/첫 번째.wav")
+
+    application.window.audio_action.trigger()
+    application.window.audio_window.page.file_selected.emit("D:/두 번째.wav")
+
+    assert selected == ["D:/첫 번째.wav", "D:/두 번째.wav"]

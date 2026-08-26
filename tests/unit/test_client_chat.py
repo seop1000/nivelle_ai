@@ -23,6 +23,7 @@ def test_main_window_is_chat_focused_and_menu_drives_primary_actions(qtbot: Any)
         "Nivelle Core 연결",
         "연결 끊기",
         "Nivelle Core 관리",
+        "오디오 분석",
         "Nivelle Archive · 장기 기억",
         "레시아 니벨 · 성격",
         "Nivelle Agent · 도구와 권한",
@@ -36,17 +37,22 @@ def test_main_window_is_chat_focused_and_menu_drives_primary_actions(qtbot: Any)
     reconnects: list[bool] = []
     new_conversations: list[bool] = []
     info_requests: list[bool] = []
+    audio_requests: list[bool] = []
     window.reconnect_requested.connect(lambda: reconnects.append(True))
     window.new_conversation_requested.connect(lambda: new_conversations.append(True))
     window.conversation_info_requested.connect(lambda: info_requests.append(True))
+    window.audio_requested.connect(lambda: audio_requests.append(True))
     window.connection_action.trigger()
     window.new_conversation_action.trigger()
     window.conversation_info_action.trigger()
+    window.audio_action.trigger()
 
     assert reconnects == [True]
     assert new_conversations == [True]
     assert info_requests == [True]
+    assert audio_requests == [True]
     assert window.conversation_info_window is not None
+    assert window.audio_window is not None
 
 
 def test_conversation_info_is_read_only_and_accepts_incremental_updates(qtbot: Any) -> None:

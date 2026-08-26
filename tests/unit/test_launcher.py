@@ -427,6 +427,40 @@ def test_core_command_propagates_network_overrides_and_diagnostics(
     ]
 
 
+def test_local_client_command_uses_loopback_profile_and_auto_pairing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[list[str], Path]] = []
+    monkeypatch.setattr(nivelle, "project_python", lambda: tmp_path / "python.exe")
+
+    def call(command: list[str], *, cwd: Path) -> int:
+        calls.append((command, cwd))
+        return 0
+
+    monkeypatch.setattr(nivelle.subprocess, "call", call)
+
+    assert (
+        nivelle.run_client(
+            "http://127.0.0.1:8765",
+            local_mode=True,
+        )
+        == 0
+    )
+    assert calls == [
+        (
+            [
+                str(tmp_path / "python.exe"),
+                "-m",
+                "nivelle_link.main",
+                "--gateway-endpoint",
+                "http://127.0.0.1:8765",
+                "--local-mode",
+            ],
+            nivelle.ROOT,
+        )
+    ]
+
+
 def test_network_diagnostics_runs_before_runtime_or_model_setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -531,6 +565,7 @@ def test_all_mode_uses_saved_gateway_health_url(
     process = object()
     checked: list[str] = []
     waited: list[str] = []
+    clients: list[tuple[str | None, bool]] = []
     monkeypatch.setattr(
         nivelle,
         "parse_args",
@@ -558,12 +593,20 @@ def test_all_mode_uses_saved_gateway_health_url(
         "wait_for_server",
         lambda _process, url: waited.append(url),
     )
-    monkeypatch.setattr(nivelle, "run_client", lambda: 0)
+    monkeypatch.setattr(
+        nivelle,
+        "run_client",
+        lambda endpoint=None, *, local_mode=False: clients.append(
+            (endpoint, local_mode)
+        )
+        or 0,
+    )
     monkeypatch.setattr(nivelle, "stop_process_tree", lambda _process: None)
 
     assert nivelle.main() == 0
     assert checked == ["http://127.0.0.1:9988/health"]
     assert waited == ["http://127.0.0.1:9988/health"]
+    assert clients == [("http://127.0.0.1:9988", True)]
 
 
 def test_server_mode_starts_local_llama_with_saved_health_url(

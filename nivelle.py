@@ -495,11 +495,17 @@ def start_server(
     )
 
 
-def run_client(gateway_endpoint: str | None = None) -> int:
+def run_client(
+    gateway_endpoint: str | None = None,
+    *,
+    local_mode: bool = False,
+) -> int:
     """Run the desktop UI in the foreground."""
     command = [str(project_python()), "-m", "nivelle_link.main"]
     if gateway_endpoint:
         command.extend(["--gateway-endpoint", gateway_endpoint])
+    if local_mode:
+        command.append("--local-mode")
     return subprocess.call(
         command,
         cwd=ROOT,
@@ -613,8 +619,15 @@ def main() -> int:
                 else start_server()
             )
             wait_for_server(server, gateway_url)
-        print("Nivelle Core가 준비되었습니다. Nivelle Link를 엽니다.")
-        return run_client(gateway_endpoint) if gateway_endpoint else run_client()
+        print("Nivelle Core가 준비되었습니다. 1PC 로컬 Link를 엽니다.")
+        return (
+            run_client(gateway_endpoint)
+            if gateway_endpoint
+            else run_client(
+                gateway_url.removesuffix("/health"),
+                local_mode=True,
+            )
+        )
     finally:
         if server is not None and not args.keep_server:
             stop_process_tree(server)

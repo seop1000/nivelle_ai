@@ -440,6 +440,118 @@ async def test_second_client_can_pair_when_admin_code_is_available(
 
 
 @pytest.mark.asyncio
+async def test_one_pc_local_client_pairs_without_dialog(
+    monkeypatch: pytest.MonkeyPatch, qtbot: Any
+) -> None:
+    profile = ConnectionProfile(id="runtime-gateway", host="127.0.0.1", port=9876)
+    monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [profile])
+    application = client_app.NivelleLinkApplication(local_mode=True)
+    qtbot.addWidget(application.window)
+    application.connections.active = profile
+
+    class FakeResponse:
+        def __init__(self, value: dict[str, object]) -> None:
+            self.value = value
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self.value
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> FakeResponse:
+            if url.endswith("/api/v1/pairing/local-code"):
+                return FakeResponse({"code": "654321"})
+            return FakeResponse(
+                {"pairing_required": True, "pairing_available": True}
+            )
+
+    paired: list[tuple[str, str]] = []
+    saved: list[tuple[ConnectionProfile, str]] = []
+
+    async def pair(code: str, name: str) -> str:
+        paired.append((code, name))
+        return "local-token"
+
+    monkeypatch.setattr(client_app.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(client_app.platform, "node", lambda: "Studio-PC")
+    monkeypatch.setattr(
+        client_app,
+        "PairingDialog",
+        lambda: pytest.fail("1PC local pairing must not open a code dialog"),
+    )
+    monkeypatch.setattr(application.client, "pair", pair)
+    monkeypatch.setattr(
+        client_app,
+        "save_token_for_profile",
+        lambda selected, token: saved.append((selected, token)),
+    )
+
+    assert await application._pair_if_required(profile) is True
+    assert paired == [("654321", "Studio-PC · Nivelle Local")]
+    assert saved == [(profile, "local-token")]
+
+
+@pytest.mark.asyncio
+async def test_one_pc_local_client_repairs_revoked_saved_token(
+    monkeypatch: pytest.MonkeyPatch, qtbot: Any
+) -> None:
+    profile = ConnectionProfile(id="runtime-gateway", host="127.0.0.1", port=9876)
+    monkeypatch.setattr(client_app, "load_connection_profiles", lambda: [profile])
+    monkeypatch.setattr(client_app, "load_token_for_profile", lambda _profile: "revoked")
+    application = client_app.NivelleLinkApplication(local_mode=True)
+    qtbot.addWidget(application.window)
+    application.connections.active = profile
+    application._ensure_connection_monitor = lambda: None
+    repairs: list[str] = []
+    status_calls = 0
+
+    async def get(_path: str) -> object:
+        nonlocal status_calls
+        status_calls += 1
+        if status_calls == 1:
+            request = httpx.Request("GET", "http://127.0.0.1:9876/api/v1/status")
+            response = httpx.Response(401, request=request)
+            raise httpx.HTTPStatusError(
+                "revoked", request=request, response=response
+            )
+        return {"protocol_version": "1.0", "model_name": "Local model"}
+
+    async def repair(_profile: ConnectionProfile) -> bool:
+        repairs.append("paired")
+        application.client.token = "replacement"
+        return True
+
+    async def ensure_chat_connection() -> None:
+        return None
+
+    monkeypatch.setattr(application.client, "get", get)
+    monkeypatch.setattr(application, "_pair_if_required", repair)
+    monkeypatch.setattr(
+        application.client,
+        "ensure_chat_connection",
+        ensure_chat_connection,
+    )
+
+    await application._connected(profile)
+
+    assert repairs == ["paired"]
+    assert status_calls == 2
+    assert application.client.token == "replacement"
+    assert application.connections.state == ConnectionState.CONNECTED
+
+
+@pytest.mark.asyncio
 async def test_server_restart_recovers_after_network_and_transient_auth_failures(
     monkeypatch: pytest.MonkeyPatch, qtbot: Any
 ) -> None:

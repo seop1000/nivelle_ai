@@ -58,7 +58,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .audio_widgets import AudioAnalysisPage
+from .audio_widgets import AudioAnalysisWindow
 from .storage import is_loopback_connection_host, validate_connection_host
 
 
@@ -83,7 +83,7 @@ class ServerConsoleWindow(QMainWindow):
         layout = QHBoxLayout(root)
         self.sections = QListWidget()
         self.sections.addItems(
-            ["개요", "서버", "모델", "추론", "변경 이력", "오디오 분석", "Agent"]
+            ["개요", "서버", "모델", "추론", "변경 이력", "Agent"]
         )
         self.sections.setMaximumWidth(180)
 
@@ -109,8 +109,6 @@ class ServerConsoleWindow(QMainWindow):
         self.pages.addWidget(self._build_models_page())
         self.pages.addWidget(self._build_inference_page())
         self.pages.addWidget(self._build_revisions_page())
-        self.audio_page = AudioAnalysisPage()
-        self.pages.addWidget(self.audio_page)
         self.pages.addWidget(self._build_agent_status_page())
         right_layout.addWidget(self.pages)
 
@@ -739,7 +737,6 @@ class ServerConsoleWindow(QMainWindow):
 
         was_online = self._online
         self._online = online
-        self.audio_page.set_online(online)
         self._update_control_state()
         if not online:
             self.message.setStyleSheet("color: #8a5a00;")
@@ -2643,6 +2640,7 @@ class MainChatWindow(QMainWindow):
     history_requested = Signal()
     persona_requested = Signal()
     agent_requested = Signal()
+    audio_requested = Signal()
     tool_decision_requested = Signal(str, str)
     new_conversation_requested = Signal()
 
@@ -2655,6 +2653,7 @@ class MainChatWindow(QMainWindow):
         self.history_window: ConversationHistoryWindow | None = None
         self.persona_window: PersonaWindow | None = None
         self.agent_window: AgentManagementWindow | None = None
+        self.audio_window: AudioAnalysisWindow | None = None
         self.conversation_info_window: ConversationInfoWindow | None = None
         self._management_online = False
         self._message_bubbles: list[MessageBubble] = []
@@ -2686,6 +2685,7 @@ class MainChatWindow(QMainWindow):
         self.disconnect_action = QAction("연결 끊기", self)
         self.disconnect_action.setEnabled(False)
         self.admin_action = QAction(f"{CORE_COMPONENT_NAME} 관리", self)
+        self.audio_action = QAction("오디오 분석", self)
         self.memory_action = QAction(f"{ARCHIVE_COMPONENT_NAME} · 장기 기억", self)
         self.persona_action = QAction(f"{KOREAN_FULL_NAME} · 성격", self)
         self.agent_action = QAction(f"{AGENT_COMPONENT_NAME} · 도구와 권한", self)
@@ -2696,6 +2696,7 @@ class MainChatWindow(QMainWindow):
         self.menu.addAction(self.connection_action)
         self.menu.addAction(self.disconnect_action)
         self.menu.addAction(self.admin_action)
+        self.menu.addAction(self.audio_action)
         self.menu.addAction(self.memory_action)
         self.menu.addAction(self.persona_action)
         self.menu.addAction(self.agent_action)
@@ -2706,6 +2707,7 @@ class MainChatWindow(QMainWindow):
         self.connection_action.triggered.connect(self.reconnect_requested.emit)
         self.disconnect_action.triggered.connect(self.disconnect_requested.emit)
         self.admin_action.triggered.connect(self.open_console)
+        self.audio_action.triggered.connect(self.open_audio)
         self.memory_action.triggered.connect(self.open_memory)
         self.persona_action.triggered.connect(self.open_persona)
         self.agent_action.triggered.connect(self.open_agent)
@@ -3233,7 +3235,12 @@ class MainChatWindow(QMainWindow):
 
         self._management_online = online
         self.disconnect_action.setEnabled(online)
-        for window in (self.console, self.memory_window, self.persona_window):
+        for window in (
+            self.console,
+            self.audio_window,
+            self.memory_window,
+            self.persona_window,
+        ):
             if window is not None:
                 window.set_online(online)
 
@@ -3266,6 +3273,15 @@ class MainChatWindow(QMainWindow):
         self.memory_window.raise_()
         self.memory_window.activateWindow()
         self.memory_requested.emit()
+
+    def open_audio(self) -> None:
+        if self.audio_window is None:
+            self.audio_window = AudioAnalysisWindow()
+        self.audio_window.set_online(self._management_online)
+        self.audio_window.show()
+        self.audio_window.raise_()
+        self.audio_window.activateWindow()
+        self.audio_requested.emit()
 
     def open_history(self) -> None:
         if self.history_window is None:
@@ -3300,6 +3316,7 @@ class MainChatWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         for window in (
             self.console,
+            self.audio_window,
             self.memory_window,
             self.history_window,
             self.persona_window,
