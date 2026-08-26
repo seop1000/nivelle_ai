@@ -30,10 +30,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print Gateway bind/address selection details and exit",
     )
-    parser.add_argument(
+    ui_group = parser.add_mutually_exclusive_group()
+    ui_group.add_argument(
         "--ui",
         action="store_true",
         help="Open the local Core identity and authentication administration UI",
+    )
+    ui_group.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run only the Gateway without the local administration UI",
     )
     return parser.parse_args(argv)
 
@@ -88,7 +94,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     resolved = app.state.services.config.resolved_sources.get("provider_endpoint")
     if resolved is not None:
         print(resolved.diagnostic())
-    if args.ui:
+    if not args.headless:
         from .admin_ui import run_core_admin_ui
 
         return run_core_admin_ui(

@@ -609,12 +609,13 @@ def test_all_mode_uses_saved_gateway_health_url(
     assert clients == [("http://127.0.0.1:9988", True)]
 
 
-def test_server_mode_starts_local_llama_with_saved_health_url(
+def test_server_mode_opens_core_ui_without_waiting_for_local_llama(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = _runtime(tmp_path)
     process = object()
     waited: list[tuple[Any, str, str]] = []
+    core_commands: list[list[str]] = []
     models = ModelsSettings(
         mode="external",
         external_url="http://localhost:9444",
@@ -646,8 +647,13 @@ def test_server_mode_starts_local_llama_with_saved_health_url(
         lambda value, url, name: waited.append((value, url, name)),
     )
     monkeypatch.setattr(nivelle, "project_python", lambda: tmp_path / "python.exe")
-    monkeypatch.setattr(nivelle.subprocess, "call", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(
+        nivelle.subprocess,
+        "call",
+        lambda command, **_kwargs: core_commands.append(command) or 0,
+    )
     monkeypatch.setattr(nivelle, "stop_process_tree", lambda _process: None)
 
     assert nivelle.main() == 0
-    assert waited == [(process, "http://localhost:9444/health", "Local configured model")]
+    assert waited == []
+    assert core_commands and core_commands[0][-1] == "--ui"

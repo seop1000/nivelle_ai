@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from nivelle_core import admin_ui
+from nivelle_core import main as core_main
 from nivelle_core.admin_control import CoreAdminError
 from nivelle_core.admin_ui import CoreAdminWindow
 from nivelle_core.app import Services
@@ -111,8 +114,43 @@ def test_core_admin_window_is_security_only(qtbot: Any) -> None:
     assert window.revoke_button.isEnabled()
 
 
-def test_core_ui_flag_is_explicit_and_launcher_enables_it() -> None:
+def test_core_ui_is_default_and_headless_mode_is_explicit() -> None:
     assert parse_args([]).ui is False
+    assert parse_args([]).headless is False
     assert parse_args(["--ui"]).ui is True
+    assert parse_args(["--headless"]).headless is True
     assert nivelle.core_command()[-2:] == ["-m", "nivelle_core.main"]
     assert nivelle.core_command(ui=True)[-1] == "--ui"
+
+
+def test_core_main_opens_ui_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    services = SimpleNamespace(
+        config=SimpleNamespace(
+            load=lambda section: (
+                {"mode": "mock"} if section == "models" else {}
+            ),
+            resolved_sources={},
+        ),
+        network_runtime=None,
+    )
+    app = SimpleNamespace(state=SimpleNamespace(services=services))
+    network = SimpleNamespace(bind_host="127.0.0.1", port=8765)
+    opened: list[tuple[str, int, str]] = []
+    monkeypatch.setattr(core_main, "server_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(core_main, "create_app", lambda *_args, **_kwargs: app)
+    monkeypatch.setattr(core_main, "resolve_gateway_network", lambda **_kwargs: network)
+    monkeypatch.setattr(core_main, "_print_network_diagnostics", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(core_main, "emit_startup_log", lambda _component: None)
+    monkeypatch.setattr(
+        admin_ui,
+        "run_core_admin_ui",
+        lambda _app, *, host, port, log_level: opened.append(
+            (host, port, log_level)
+        )
+        or 0,
+    )
+
+    assert core_main.main([]) == 0
+    assert opened == [("127.0.0.1", 8765, "info")]

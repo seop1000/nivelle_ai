@@ -590,7 +590,10 @@ def main() -> int:
         try:
             if local_llama_health_url and not endpoint_is_ready(local_llama_health_url):
                 llama = start_llama(runtime, settings.models, settings.inference)
-                wait_for_llama(llama, local_llama_health_url, model_name)
+                print(
+                    f"{model_name} 모델을 백그라운드에서 불러옵니다. "
+                    "Core UI는 모델 로딩과 동시에 열립니다."
+                )
             return subprocess.call(
                 core_command(
                     provider_endpoint=provider_endpoint,
@@ -607,7 +610,6 @@ def main() -> int:
     try:
         if local_llama_health_url and not endpoint_is_ready(local_llama_health_url):
             llama = start_llama(runtime, settings.models, settings.inference)
-            wait_for_llama(llama, local_llama_health_url, model_name)
         if not server_is_ready(gateway_url):
             server = (
                 start_server(
@@ -619,6 +621,8 @@ def main() -> int:
                 else start_server()
             )
             wait_for_server(server, gateway_url)
+        if llama is not None and local_llama_health_url is not None:
+            wait_for_llama(llama, local_llama_health_url, model_name)
         print("Nivelle Core가 준비되었습니다. 1PC 로컬 Link를 엽니다.")
         return (
             run_client(gateway_endpoint)
