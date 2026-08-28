@@ -70,11 +70,15 @@ def test_audio_analysis_is_a_standalone_menu_window(qtbot: Any) -> None:
         main.audio_action.trigger()
     assert isinstance(main.audio_window, AudioAnalysisWindow)
     assert main.audio_window.isVisible()
+    assert [main.audio_window.tabs.tabText(index) for index in range(2)] == [
+        "실시간 분석",
+        "파일 분석",
+    ]
     page = main.audio_window.page
     page.set_analysis_result(RESULT, cache_hit=True)
     assert page.channel_select.count() == 3
     assert page.position_slider.maximum() == 2_000
-    assert "Spectral centroid" in page.metrics.toPlainText()
+    assert "스펙트럼 중심" in page.metrics.toPlainText()
     assert "캐시 사용" in page.status.text()
     page._position_changed(1_500)
     assert page.live_rms.text() == "0.200000"

@@ -97,6 +97,13 @@ Link의 `≡` 메뉴에서 독립된 `오디오 분석` 창을 열어 M4A, MP3, 
 분석은 Core worker에서 실행되고 파일 내용 hash로 캐시됩니다.
 포맷과 한계는 [Core Audio Analysis](docs/AUDIO_ANALYSIS.md)를 참고하십시오.
 
+같은 창의 `실시간 분석` 탭에서는 Link PC의 마이크 또는 운영체제가 입력 장치로 제공하는
+오디오를 분석합니다. 입력 장치를 고른 뒤 `분석 시작`을 누르면 실시간 파형, 주파수
+스펙트럼, 주요 주파수, 기본 주파수(F0), RMS/dBFS, Peak, 실제 샘플레이트와 최근
+스펙트로그램을 확인할 수 있습니다. 이 경로는 Core 연결 없이 로컬에서 동작하며 파일
+내용이나 마이크 입력을 서버로 전송하지 않습니다. 세부 알고리즘과 한계는
+[실시간 오디오 분석](docs/REALTIME_AUDIO_ANALYSIS.md)을 참고하십시오.
+
 `models.yaml`에서 `external_url`을 지정하면 Core는 로컬 llama 프로세스를 시작하지
 않습니다. 로컬 `llama-server`는 반드시 loopback에만 바인딩하고, Gateway도 공용
 인터넷에 직접 노출하지 마십시오. 두 PC가 다른 네트워크에 있으면 공개 포트 포워딩보다
