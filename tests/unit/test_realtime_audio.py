@@ -15,8 +15,10 @@ from nivelle_link.realtime_audio import (
     PcmStreamDecoder,
     RealtimeAnalysisWorker,
     RealtimeAudioAnalyzer,
+    RealtimeAudioEngine,
 )
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtMultimedia import QAudio
 
 
 def tone(
@@ -186,6 +188,27 @@ class FakeAudioEngine(QObject):
         self._running = False
         if emit_state:
             self.state_changed.emit("중지됨")
+
+
+class AudioStateEmitter(QObject):
+    state_changed = Signal(QAudio.State)
+
+
+def test_qt_audio_state_signal_matches_engine_handler(qtbot: Any) -> None:
+    engine = RealtimeAudioEngine()
+    emitter = AudioStateEmitter()
+    received: list[QAudio.State] = []
+
+    def receive(state: QAudio.State) -> None:
+        received.append(state)
+
+    emitter.state_changed.connect(engine._source_state_changed)
+    emitter.state_changed.connect(receive)
+    with qtbot.captureExceptions() as exceptions:
+        emitter.state_changed.emit(QAudio.State.IdleState)
+
+    assert exceptions == []
+    assert received == [QAudio.State.IdleState]
 
 
 def test_realtime_page_switches_input_without_app_restart(qtbot: Any) -> None:

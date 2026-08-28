@@ -11,6 +11,7 @@ import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import QByteArray, QIODevice, QObject, Signal
 from PySide6.QtMultimedia import (
+    QAudio,
     QAudioDevice,
     QAudioFormat,
     QAudioSource,
@@ -617,8 +618,8 @@ class RealtimeAudioEngine(QObject):
         payload: QByteArray = self._device_io.readAll()
         self._worker.submit(_qbyte_array_bytes(payload))
 
-    def _source_state_changed(self, state: QtAudio.State) -> None:
-        if self._stopping or state != QtAudio.State.StoppedState:
+    def _source_state_changed(self, state: QAudio.State) -> None:
+        if self._stopping or state != QAudio.State.StoppedState:
             return
         source = self._source
         if source is None:
